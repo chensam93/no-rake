@@ -18,7 +18,7 @@ From the repo root:
    - **server:** `tsx watch src/index.ts` → HTTP + WebSocket on port **3000** (override with `PORT`).
    - **client:** Vite dev server on **5173** (default).
 
-3. Open **http://localhost:5173** — the page opens a WebSocket to **`ws://localhost:3000/ws`** (set `VITE_WS_URL` in `client/.env.development` if you change ports).
+3. Open **http://localhost:5173** — the page opens a WebSocket to **`ws://localhost:3000/ws`**. To override, copy `client/.env.example` to `client/.env.development` (gitignored) and edit `VITE_WS_URL`.
 
 4. **Checks:** browser should show socket state `open` and a JSON `hello` line; **Send test message** should echo back. **`GET http://localhost:3000/health`** returns `{"ok":true}`.
 
