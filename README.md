@@ -4,7 +4,7 @@ Play-chip Texas hold’em for private tables (friends/family). Not real money; *
 
 ## Stack
 
-- **Server:** Node.js + **Fastify** in `server/` (plain **JavaScript** for now; TypeScript can come later).
+- **Server:** Node.js + **Fastify** + **`@fastify/websocket`** in `server/` (plain **JavaScript** for now).
 
 ### Run the server (step 2)
 
@@ -16,6 +16,16 @@ npm run dev
 
 Then open **http://127.0.0.1:3000/health** — expect JSON `{"ok":true}`.  
 Set **`PORT`** to use another port (environment variable).
+
+### WebSocket (step 3)
+
+With **`npm run dev`** still running, **`ws://127.0.0.1:3000/ws`** is the socket URL. On connect, the server sends a JSON **`hello`** message; any text you send is echoed as **`echo`**.
+
+Quick check from **`server/`** (uses the **`ws`** library already pulled in as a dependency):
+
+```bash
+node --input-type=module -e "import WebSocket from 'ws'; const w=new WebSocket('ws://127.0.0.1:3000/ws'); w.on('message',d=>console.log(d.toString())); w.on('open',()=>w.send('ping'));"
+```
 
 ## Development model
 
@@ -30,7 +40,7 @@ Implementation (source, tests, CI, most docs) is **LLM-generated under maintaine
 
 Revise this section if the split changes materially.
 
-**Snapshot (2026-04-05):** Root `package.json` + `.gitignore`; `server/` with Fastify + `GET /health`. No client yet. Tooling: Cursor. Code review: minimal.
+**Snapshot (2026-04-05):** `server/` — Fastify, `GET /health`, **`GET /ws`** WebSocket (hello + echo). No browser client yet. Tooling: Cursor. Code review: minimal.
 
 ## License
 
