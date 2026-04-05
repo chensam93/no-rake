@@ -23,6 +23,14 @@
 - **Primary agent/tooling:** Cursor (and similar) with the maintainer prompting and accepting edits.
 - **Review habit:** Light by default; assume gaps.
 
+## Maintainer context (experience & explanations)
+
+The maintainer **does not have a strong software engineering or web development background**. This repo is a learning vehicle as much as a product.
+
+**What we want as the project grows:** practical **insight and lessons** alongside the code—*why* a choice was made, what a term means, and what to watch out for—**balanced to that experience level** (fewer unstated assumptions over time as comfort grows, without drowning in jargon up front).
+
+Anyone helping out (especially AI assistants) should **pitch explanations to that level** and **adjust as the maintainer asks** (“deeper,” “shorter,” “show me the file path,” etc.). **Update this paragraph** if background or goals change.
+
 ---
 
 Virtual, **no real-money** Texas hold’em for private home games with friends and family: room links, play chips, and tooling improvements over typical free tables (e.g. auto top-off, custom bet sizing—planned as development continues).
