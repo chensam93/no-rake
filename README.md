@@ -4,7 +4,18 @@ Play-chip Texas hold’em for private tables (friends/family). Not real money; *
 
 ## Stack
 
-TBD — added piece by piece with commits.
+- **Server:** Node.js + **Fastify** in `server/` (plain **JavaScript** for now; TypeScript can come later).
+
+### Run the server (step 2)
+
+```bash
+cd server
+npm install
+npm run dev
+```
+
+Then open **http://127.0.0.1:3000/health** — expect JSON `{"ok":true}`.  
+Set **`PORT`** to use another port (environment variable).
 
 ## Development model
 
@@ -19,7 +30,7 @@ Implementation (source, tests, CI, most docs) is **LLM-generated under maintaine
 
 Revise this section if the split changes materially.
 
-**Snapshot (2026-04-05):** Prior monorepo scaffold removed; root `package.json` + `.gitignore` only. Tooling: Cursor. Code review: minimal.
+**Snapshot (2026-04-05):** Root `package.json` + `.gitignore`; `server/` with Fastify + `GET /health`. No client yet. Tooling: Cursor. Code review: minimal.
 
 ## License
 
