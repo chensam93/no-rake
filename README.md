@@ -21,10 +21,6 @@ Revise this section if the split changes materially.
 
 **Snapshot (2026-04-04):** No application code committed yet. README only. Tooling: Cursor. Code review: minimal.
 
-## Maintainer
-
-Limited software engineering and web background. Explanations in issues/PRs and agent output should stay **appropriate to that baseline**; go deeper or shorter on request.
-
 ## Naming
 
 - Product: **No Rake** (no house cut—social stakes only).  
