@@ -1,48 +1,34 @@
 # No Rake
 
-## How this repo was built (human vs AI)
+Play-chip Texas hold’em for private tables (friends/family). Not real money. Target capabilities include room links, auto top-off, and configurable bet sizing. **Status:** pre-MVP / scaffold not landed yet.
 
-**Blunt version:** Expect **nearly all—or all—of the code, config, and docs** in this repository to be **authored by AI coding agents** (Cursor, etc.). The human maintainer’s job is mainly **direction**: goals, constraints, taste, “yes/no” on behavior, and occasional manual fixes. If you use or fork this project, treat it like **untrusted AI output** until you have reviewed it yourself.
+## Stack
 
-**Granular split (typical; not a legal claim—just how we work):**
+TBD.
 
-| Area | Human | AI agent |
-|------|--------|----------|
-| What to build, priorities, poker rules intent | Primary | — |
-| Architecture / stack *suggestions* and tradeoffs | Guided (human picks or approves) | Often drafted first |
-| Source code, tests, scripts, CI config, boilerplate | Rare direct edits | **Almost always** |
-| README, comments, commit messages unless noted | Mostly drafted by AI; human may tweak | **Mostly** |
-| Running the app locally, production deploy, secrets | Human must do real-world steps | May propose commands |
-| Security / correctness | Human responsible for *verifying* | No warranty |
+## Development model
 
-**Living document:** This section is meant to stay honest as the project grows. When something meaningful changes (e.g. you write a subsystem by hand, or ship v1), **edit the snapshot below** and bump the date.
+Implementation (source, tests, CI, most docs) is **LLM-generated under maintainer direction** (Cursor and similar). The maintainer sets product behavior, accepts or rejects changes, runs deploys, and holds secrets. **Third parties should review before relying on this codebase.**
 
-**Snapshot — 2026-04-04**
+| Responsibility | Maintainer | Coding agent |
+|----------------|------------|----------------|
+| Product rules, UX intent, poker semantics | Yes | — |
+| Code, configs, boilerplate, most README text | Rare direct edits | Primary |
+| Local run, hosting, env vars, production checks | Yes | Suggests only |
+| Security and correctness validation | Maintainer | No guarantee |
 
-- **Lines of production code written by hand by a human (estimate):** ~0% so far (README wording may be human-tweaked; code: none yet).
-- **Primary agent/tooling:** Cursor (and similar) with the maintainer prompting and accepting edits.
-- **Review habit:** Light by default; assume gaps.
+Revise this section if the split changes materially.
 
-## Maintainer context (experience & explanations)
+**Snapshot (2026-04-04):** No application code committed yet. README only. Tooling: Cursor. Code review: minimal.
 
-The maintainer **does not have a strong software engineering or web development background**. This repo is a learning vehicle as much as a product.
+## Maintainer
 
-**What we want as the project grows:** practical **insight and lessons** alongside the code—*why* a choice was made, what a term means, and what to watch out for—**balanced to that experience level** (fewer unstated assumptions over time as comfort grows, without drowning in jargon up front).
+Limited software engineering and web background. Explanations in issues/PRs and agent output should stay **appropriate to that baseline**; go deeper or shorter on request.
 
-Anyone helping out (especially AI assistants) should **pitch explanations to that level** and **adjust as the maintainer asks** (“deeper,” “shorter,” “show me the file path,” etc.). **Update this paragraph** if background or goals change.
+## Naming
 
----
-
-Virtual, **no real-money** Texas hold’em for private home games with friends and family: room links, play chips, and tooling improvements over typical free tables (e.g. auto top-off, custom bet sizing—planned as development continues).
-
-**Status:** Early / pet project. Not intended as a polished consumer product yet.
-
-## Name
-
-- **Display name:** No Rake  
-- **Repository & package slug:** `no-rake`
-
-“No rake” means the host isn’t taking a cut—this is social poker, not a house game.
+- Product: **No Rake** (no house cut—social stakes only).  
+- Repo / packages: `no-rake`.
 
 ## License
 
