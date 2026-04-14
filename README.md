@@ -32,6 +32,19 @@ node --input-type=module -e "import WebSocket from 'ws'; const w=new WebSocket('
 With the server running, open **http://127.0.0.1:3000/**.  
 That page opens `ws://127.0.0.1:3000/ws`, logs events, and has a **Send ping** button.
 
+### In-memory room join (step 5)
+
+Server now supports JSON message:
+
+```json
+{ "type": "join_room", "roomId": "home", "playerName": "sam" }
+```
+
+On success:
+- client gets `joined_room`
+- everyone in that room gets `room_state` with current player list
+- disconnect removes the player and republishes `room_state`
+
 ## Development model
 
 Implementation (source, tests, CI, most docs) is **LLM-generated under maintainer direction** (Cursor and similar). The maintainer sets product behavior, accepts or rejects changes, runs deploys, and holds secrets. **Third parties should review before relying on this codebase.**
@@ -45,7 +58,7 @@ Implementation (source, tests, CI, most docs) is **LLM-generated under maintaine
 
 Revise this section if the split changes materially.
 
-**Snapshot (2026-04-05):** `server/` — Fastify, `GET /health`, `GET /` smoke page, **`GET /ws`** WebSocket (hello + echo). Tooling: Cursor. Code review: minimal.
+**Snapshot (2026-04-05):** `server/` — Fastify, `GET /health`, `GET /` smoke page, **`GET /ws`** WebSocket with `join_room` and room_state broadcast (in memory). Tooling: Cursor. Code review: minimal.
 
 ## License
 
