@@ -5,7 +5,8 @@ const app = Fastify({ logger: true });
 const PORT = Number(process.env.PORT) || 3000;
 const OPEN = 1;
 const MAX_SEATS = 9;
-const PLAYER_ACTIONS = new Set(["fold", "check", "call"]);
+const STARTING_STACK = 1000;
+const PLAYER_ACTIONS = new Set(["fold", "check", "call", "bet", "raise_to"]);
 
 const rooms = new Map();
 
@@ -23,6 +24,8 @@ function getOrCreateRoom(roomId) {
         turnSeatNumber: null,
         foldedSeatNumbers: new Set(),
         actionLog: [],
+        currentBet: 0,
+        minRaiseTo: null,
       },
     });
   }
@@ -99,6 +102,8 @@ function publishRoomState(roomId) {
       inProgress: room.hand.inProgress,
       turnSeatNumber: room.hand.turnSeatNumber,
       foldedSeatNumbers: [...room.hand.foldedSeatNumbers].sort((left, right) => left - right),
+      currentBet: room.hand.currentBet,
+      minRaiseTo: room.hand.minRaiseTo,
       actionLog: room.hand.actionLog,
     },
   };
@@ -120,11 +125,34 @@ function startRound(room) {
   room.hand.foldedSeatNumbers.clear();
   room.hand.actionLog = [];
   room.hand.turnSeatNumber = seatedPlayers[0].seatNumber;
+  room.hand.currentBet = 0;
+  room.hand.minRaiseTo = null;
+
+  for (const player of room.playersBySocket.values()) {
+    player.committedThisRound = 0;
+  }
 
   return {
     ok: true,
     turnSeatNumber: room.hand.turnSeatNumber,
   };
+}
+
+function getPlayerToCallAmount(room, player) {
+  return Math.max(0, room.hand.currentBet - player.committedThisRound);
+}
+
+function maybeEndRoundOnFold(room) {
+  const activeSeatNumbers = getActiveSeatNumbers(room);
+  if (activeSeatNumbers.length > 1) return null;
+
+  const winnerSeatNumber = activeSeatNumbers[0] ?? null;
+  room.hand.inProgress = false;
+  room.hand.turnSeatNumber = null;
+  room.hand.currentBet = 0;
+  room.hand.minRaiseTo = null;
+
+  return winnerSeatNumber;
 }
 
 function renderSmokePage() {
@@ -139,17 +167,19 @@ function renderSmokePage() {
       button { padding: 0.4rem 0.75rem; }
       code { background: #f0f0f0; padding: 0.1rem 0.25rem; border-radius: 4px; }
       .row { margin-bottom: 0.5rem; }
+      input { margin-right: 8px; }
     </style>
   </head>
   <body>
     <h1>No Rake</h1>
-    <p>Step 7 smoke test for room, seat, and simple round flow.</p>
+    <p>Step 9 smoke test for room, seats, and basic betting actions.</p>
     <p>Socket URL: <code>ws://127.0.0.1:${PORT}/ws</code></p>
 
     <div class="row">
       <label>Room <input id="room" value="home" /></label>
       <label>Name <input id="name" value="player" /></label>
       <label>Seat <input id="seat" value="1" type="number" min="1" max="9" /></label>
+      <label>Amount <input id="amount" value="40" type="number" min="1" /></label>
     </div>
 
     <div class="row">
@@ -158,6 +188,8 @@ function renderSmokePage() {
       <button id="startRound">Start round</button>
       <button id="check">Check</button>
       <button id="call">Call</button>
+      <button id="bet">Bet</button>
+      <button id="raiseTo">Raise To</button>
       <button id="fold">Fold</button>
       <button id="send">Send ping</button>
     </div>
@@ -176,6 +208,8 @@ function renderSmokePage() {
         ws.send(JSON.stringify(payload));
         line("[out] " + label);
       };
+
+      const amount = () => Number(document.getElementById("amount").value);
 
       ws.onopen = () => line("[open]");
       ws.onmessage = (event) => line("[in] " + event.data);
@@ -203,21 +237,12 @@ function renderSmokePage() {
         );
       };
 
-      document.getElementById("startRound").onclick = () => {
-        send({ type: "start_round" }, "start_round");
-      };
-
-      document.getElementById("check").onclick = () => {
-        send({ type: "player_action", actionType: "check" }, "player_action:check");
-      };
-
-      document.getElementById("call").onclick = () => {
-        send({ type: "player_action", actionType: "call" }, "player_action:call");
-      };
-
-      document.getElementById("fold").onclick = () => {
-        send({ type: "player_action", actionType: "fold" }, "player_action:fold");
-      };
+      document.getElementById("startRound").onclick = () => send({ type: "start_round" }, "start_round");
+      document.getElementById("check").onclick = () => send({ type: "player_action", actionType: "check" }, "check");
+      document.getElementById("call").onclick = () => send({ type: "player_action", actionType: "call" }, "call");
+      document.getElementById("bet").onclick = () => send({ type: "player_action", actionType: "bet", amount: amount() }, "bet");
+      document.getElementById("raiseTo").onclick = () => send({ type: "player_action", actionType: "raise_to", amount: amount() }, "raise_to");
+      document.getElementById("fold").onclick = () => send({ type: "player_action", actionType: "fold" }, "fold");
 
       document.getElementById("send").onclick = () => {
         ws.send("ping-" + Date.now());
@@ -246,7 +271,7 @@ app.get("/ws", { websocket: true }, (socket) => {
       "join_room",
       "sit_down",
       "start_round",
-      "player_action",
+      "player_action:check/call/fold/bet/raise_to",
       "ping-*",
     ],
   });
@@ -292,6 +317,8 @@ app.get("/ws", { websocket: true }, (socket) => {
       room.playersBySocket.set(socket, {
         playerName,
         seatNumber: null,
+        stack: STARTING_STACK,
+        committedThisRound: 0,
       });
 
       sendJson(socket, {
@@ -405,7 +432,7 @@ app.get("/ws", { websocket: true }, (socket) => {
       if (!PLAYER_ACTIONS.has(actionType)) {
         sendJson(socket, {
           type: "error",
-          message: "player_action actionType must be fold, check, or call",
+          message: "actionType must be fold, check, call, bet, or raise_to",
         });
         return;
       }
@@ -435,7 +462,121 @@ app.get("/ws", { websocket: true }, (socket) => {
         return;
       }
 
-      if (actionType === "fold") {
+      const toCall = getPlayerToCallAmount(room, currentPlayer);
+      let amountCommitted = 0;
+      let note = null;
+
+      if (actionType === "check") {
+        if (toCall > 0) {
+          sendJson(socket, {
+            type: "error",
+            message: `cannot check; call amount is ${toCall}`,
+          });
+          return;
+        }
+      } else if (actionType === "call") {
+        if (toCall <= 0) {
+          sendJson(socket, {
+            type: "error",
+            message: "nothing to call; use check",
+          });
+          return;
+        }
+
+        if (currentPlayer.stack < toCall) {
+          sendJson(socket, {
+            type: "error",
+            message: "insufficient stack; all-in not implemented yet",
+          });
+          return;
+        }
+
+        currentPlayer.stack -= toCall;
+        currentPlayer.committedThisRound += toCall;
+        amountCommitted = toCall;
+      } else if (actionType === "bet") {
+        if (room.hand.currentBet > 0) {
+          sendJson(socket, {
+            type: "error",
+            message: "bet only allowed when currentBet is 0; use raise_to",
+          });
+          return;
+        }
+
+        const amount = Number(parsed.amount);
+        if (!Number.isInteger(amount) || amount <= 0) {
+          sendJson(socket, {
+            type: "error",
+            message: "bet requires a positive integer amount",
+          });
+          return;
+        }
+
+        if (amount > currentPlayer.stack) {
+          sendJson(socket, { type: "error", message: "insufficient stack for bet" });
+          return;
+        }
+
+        currentPlayer.stack -= amount;
+        currentPlayer.committedThisRound += amount;
+        room.hand.currentBet = currentPlayer.committedThisRound;
+        room.hand.minRaiseTo = room.hand.currentBet * 2;
+        amountCommitted = amount;
+        note = `currentBet=${room.hand.currentBet}`;
+      } else if (actionType === "raise_to") {
+        if (room.hand.currentBet <= 0) {
+          sendJson(socket, {
+            type: "error",
+            message: "raise_to requires an existing currentBet; use bet first",
+          });
+          return;
+        }
+
+        const targetAmount = Number(parsed.amount);
+        if (!Number.isInteger(targetAmount) || targetAmount <= room.hand.currentBet) {
+          sendJson(socket, {
+            type: "error",
+            message: `raise_to must be an integer greater than ${room.hand.currentBet}`,
+          });
+          return;
+        }
+
+        if (room.hand.minRaiseTo !== null && targetAmount < room.hand.minRaiseTo) {
+          sendJson(socket, {
+            type: "error",
+            message: `raise_to must be at least ${room.hand.minRaiseTo}`,
+          });
+          return;
+        }
+
+        const amountToCommit = targetAmount - currentPlayer.committedThisRound;
+        if (amountToCommit <= 0) {
+          sendJson(socket, {
+            type: "error",
+            message: "raise_to amount must exceed your current committed amount",
+          });
+          return;
+        }
+
+        if (amountToCommit > currentPlayer.stack) {
+          sendJson(socket, {
+            type: "error",
+            message: "insufficient stack for raise",
+          });
+          return;
+        }
+
+        const previousCurrentBet = room.hand.currentBet;
+
+        currentPlayer.stack -= amountToCommit;
+        currentPlayer.committedThisRound += amountToCommit;
+        room.hand.currentBet = currentPlayer.committedThisRound;
+
+        const raiseIncrement = room.hand.currentBet - previousCurrentBet;
+        room.hand.minRaiseTo = room.hand.currentBet + raiseIncrement;
+        amountCommitted = amountToCommit;
+        note = `currentBet=${room.hand.currentBet}`;
+      } else if (actionType === "fold") {
         room.hand.foldedSeatNumbers.add(currentPlayer.seatNumber);
       }
 
@@ -443,14 +584,12 @@ app.get("/ws", { websocket: true }, (socket) => {
         seatNumber: currentPlayer.seatNumber,
         playerName: currentPlayer.playerName,
         actionType,
+        amountCommitted,
+        toCallBeforeAction: toCall,
       });
 
-      const activeSeatNumbers = getActiveSeatNumbers(room);
-      if (activeSeatNumbers.length <= 1) {
-        const winnerSeatNumber = activeSeatNumbers[0] ?? null;
-        room.hand.inProgress = false;
-        room.hand.turnSeatNumber = null;
-
+      const winnerSeatNumber = maybeEndRoundOnFold(room);
+      if (winnerSeatNumber !== null) {
         sendJson(socket, {
           type: "round_ended",
           roomId: session.roomId,
@@ -470,7 +609,9 @@ app.get("/ws", { websocket: true }, (socket) => {
         type: "action_applied",
         roomId: session.roomId,
         actionType,
+        amountCommitted,
         nextTurnSeatNumber: room.hand.turnSeatNumber,
+        note,
       });
 
       publishRoomState(session.roomId);

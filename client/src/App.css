@@ -109,6 +109,22 @@ ul {
   padding-left: 1rem;
 }
 
+.players-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.players-table th,
+.players-table td {
+  border: 1px solid #e5e7eb;
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+}
+
+.players-table th {
+  background: #f9fafb;
+}
+
 @media (max-width: 900px) {
   .state-grid {
     grid-template-columns: 1fr;

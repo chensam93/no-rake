@@ -1,6 +1,6 @@
 # No Rake
 
-Play-chip Texas hold’em for private tables (friends/family). Not real money; **no rake** as in no host cut—social stakes only. Target capabilities include room links, auto top-off, and configurable bet sizing. **Status:** incremental setup (rebuilding the codebase step by step).
+Play-chip Texas hold?em for private tables (friends/family). Not real money; **no rake** as in no host cut?social stakes only. Target capabilities include room links, auto top-off, and configurable bet sizing. **Status:** incremental setup (rebuilding the codebase step by step).
 
 ## Stack
 
@@ -45,8 +45,8 @@ Set websocket URL by copying `client/.env.example` to `client/.env.development` 
 - `join_room`
 - `sit_down`
 - `start_round`
-- `player_action` (`check`, `call`, `fold`)
-- room broadcast: `room_state` with player seats + round metadata
+- `player_action` (`check`, `call`, `fold`, `bet`, `raise_to`)
+- room broadcast: `room_state` with player seats, stacks, committed chips, and round metadata (`currentBet`, `minRaiseTo`)
 
 ## Development model
 
@@ -54,14 +54,14 @@ Implementation (source, tests, CI, most docs) is **LLM-generated under maintaine
 
 | Responsibility | Maintainer | Coding agent |
 |----------------|------------|----------------|
-| Product rules, UX intent, poker semantics | Yes | — |
+| Product rules, UX intent, poker semantics | Yes | ? |
 | Code, configs, boilerplate, most README text | Rare direct edits | Primary |
 | Local run, hosting, env vars, production checks | Yes | Suggests only |
 | Security and correctness validation | Maintainer | No guarantee |
 
 Revise this section if the split changes materially.
 
-**Snapshot (2026-04-15):** Browser client exists (`client/`) and can join rooms, sit, start rounds, and send basic actions against the websocket backend.
+**Snapshot (2026-04-15):** Browser client exists (`client/`) and can join rooms, sit, start rounds, and test basic betting flows (`bet`, `raise_to`, `call`, `fold`) against the websocket backend.
 
 ## License
 

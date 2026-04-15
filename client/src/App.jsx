@@ -19,6 +19,7 @@ function App() {
   const [roomId, setRoomId] = useState("home");
   const [playerName, setPlayerName] = useState("player");
   const [seatNumber, setSeatNumber] = useState(1);
+  const [amount, setAmount] = useState(40);
   const [roomState, setRoomState] = useState(null);
   const [lastError, setLastError] = useState(null);
 
@@ -96,7 +97,7 @@ function App() {
     <main className="app-shell">
       <header>
         <h1>No Rake</h1>
-        <p className="sub">Playable dev UI (join, seat, start round, actions)</p>
+        <p className="sub">Playable dev UI (join, seat, start round, actions, bet sizing)</p>
       </header>
 
       <section className="card">
@@ -133,6 +134,15 @@ function App() {
               onChange={(event) => setSeatNumber(Number(event.target.value || 1))}
             />
           </label>
+          <label>
+            Amount
+            <input
+              type="number"
+              min={1}
+              value={amount}
+              onChange={(event) => setAmount(Number(event.target.value || 1))}
+            />
+          </label>
         </div>
 
         <div className="row buttons">
@@ -141,6 +151,26 @@ function App() {
           <button onClick={() => sendJson({ type: "start_round" }, "start_round")}>Start round</button>
           <button onClick={() => sendJson({ type: "player_action", actionType: "check" }, "player_action:check")}>Check</button>
           <button onClick={() => sendJson({ type: "player_action", actionType: "call" }, "player_action:call")}>Call</button>
+          <button
+            onClick={() =>
+              sendJson(
+                { type: "player_action", actionType: "bet", amount },
+                "player_action:bet",
+              )
+            }
+          >
+            Bet
+          </button>
+          <button
+            onClick={() =>
+              sendJson(
+                { type: "player_action", actionType: "raise_to", amount },
+                "player_action:raise_to",
+              )
+            }
+          >
+            Raise To
+          </button>
           <button onClick={() => sendJson({ type: "player_action", actionType: "fold" }, "player_action:fold")}>Fold</button>
           <button
             onClick={() => {
@@ -170,6 +200,34 @@ function App() {
         </div>
       </section>
 
+      <section className="card">
+        <h2>Players</h2>
+        {roomState?.players?.length ? (
+          <table className="players-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Seat</th>
+                <th>Stack</th>
+                <th>Committed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {roomState.players.map((player) => (
+                <tr key={`${player.playerName}-${player.seatNumber ?? "none"}`}>
+                  <td>{player.playerName}</td>
+                  <td>{player.seatNumber ?? "open"}</td>
+                  <td>{player.stack}</td>
+                  <td>{player.committedThisRound}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p>No players yet.</p>
+        )}
+      </section>
+
       <section className="card state-grid">
         <div>
           <h2>Round</h2>
@@ -177,6 +235,8 @@ function App() {
             <ul>
               <li>inProgress: {String(roomState.round.inProgress)}</li>
               <li>turnSeatNumber: {String(roomState.round.turnSeatNumber)}</li>
+              <li>currentBet: {roomState.round.currentBet}</li>
+              <li>minRaiseTo: {String(roomState.round.minRaiseTo)}</li>
               <li>folded: {roomState.round.foldedSeatNumbers.join(", ") || "none"}</li>
             </ul>
           ) : (

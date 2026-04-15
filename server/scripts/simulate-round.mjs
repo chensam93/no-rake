@@ -31,14 +31,22 @@ bob.on("open", () => {
 });
 
 setTimeout(() => {
-  alice.send(JSON.stringify({ type: "player_action", actionType: "check" }));
+  alice.send(JSON.stringify({ type: "player_action", actionType: "bet", amount: 40 }));
 }, 350);
 
 setTimeout(() => {
-  bob.send(JSON.stringify({ type: "player_action", actionType: "fold" }));
+  bob.send(JSON.stringify({ type: "player_action", actionType: "raise_to", amount: 100 }));
 }, 480);
+
+setTimeout(() => {
+  alice.send(JSON.stringify({ type: "player_action", actionType: "call" }));
+}, 620);
+
+setTimeout(() => {
+  bob.send(JSON.stringify({ type: "player_action", actionType: "fold" }));
+}, 760);
 
 setTimeout(() => {
   alice.close();
   bob.close();
-}, 900);
+}, 1100);
