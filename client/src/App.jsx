@@ -12,6 +12,10 @@ function prettyJson(value) {
   }
 }
 
+function timestamp() {
+  return new Date().toLocaleTimeString();
+}
+
 function App() {
   const wsRef = useRef(null);
   const [connectionState, setConnectionState] = useState("connecting");
@@ -22,15 +26,18 @@ function App() {
   const [amount, setAmount] = useState(40);
   const [roomState, setRoomState] = useState(null);
   const [lastError, setLastError] = useState(null);
+  const isSocketOpen = connectionState === "open";
 
   const appendEvent = (line) => {
-    setEvents((prev) => [...prev.slice(-79), line]);
+    const stamped = `[${timestamp()}] ${line}`;
+    setEvents((prev) => [...prev.slice(-79), stamped]);
   };
 
   const sendJson = (payload, label) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      appendEvent("[local] blocked: websocket not open");
+      const readyState = ws ? ws.readyState : "null";
+      appendEvent(`[local] blocked: websocket not open (readyState=${readyState})`);
       return;
     }
 
@@ -48,13 +55,17 @@ function App() {
     };
 
     ws.onclose = () => {
-      setConnectionState("closed");
+      if (wsRef.current === ws) {
+        setConnectionState("closed");
+        wsRef.current = null;
+      }
       appendEvent("[local] websocket closed");
-      wsRef.current = null;
     };
 
     ws.onerror = () => {
-      setConnectionState("error");
+      if (wsRef.current === ws) {
+        setConnectionState("error");
+      }
       appendEvent("[local] websocket error");
     };
 
@@ -79,7 +90,9 @@ function App() {
 
     return () => {
       ws.close();
-      wsRef.current = null;
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
     };
   }, []);
 
@@ -105,9 +118,10 @@ function App() {
         <p>
           WebSocket: <code>{WS_URL}</code>
         </p>
-        <p>
-          Status: <strong>{connectionState}</strong>
-        </p>
+        <div className="status-row">
+          <span>Status:</span>
+          <span className={`status-badge status-${connectionState}`}>{connectionState}</span>
+        </div>
       </section>
 
       <section className="card controls">
@@ -146,12 +160,13 @@ function App() {
         </div>
 
         <div className="row buttons">
-          <button onClick={() => sendJson({ type: "join_room", roomId, playerName }, "join_room")}>Join room</button>
-          <button onClick={() => sendJson({ type: "sit_down", seatNumber }, "sit_down")}>Sit down</button>
-          <button onClick={() => sendJson({ type: "start_round" }, "start_round")}>Start round</button>
-          <button onClick={() => sendJson({ type: "player_action", actionType: "check" }, "player_action:check")}>Check</button>
-          <button onClick={() => sendJson({ type: "player_action", actionType: "call" }, "player_action:call")}>Call</button>
+          <button disabled={!isSocketOpen} onClick={() => sendJson({ type: "join_room", roomId, playerName }, "join_room")}>Join room</button>
+          <button disabled={!isSocketOpen} onClick={() => sendJson({ type: "sit_down", seatNumber }, "sit_down")}>Sit down</button>
+          <button disabled={!isSocketOpen} onClick={() => sendJson({ type: "start_round" }, "start_round")}>Start round</button>
+          <button disabled={!isSocketOpen} onClick={() => sendJson({ type: "player_action", actionType: "check" }, "player_action:check")}>Check</button>
+          <button disabled={!isSocketOpen} onClick={() => sendJson({ type: "player_action", actionType: "call" }, "player_action:call")}>Call</button>
           <button
+            disabled={!isSocketOpen}
             onClick={() =>
               sendJson(
                 { type: "player_action", actionType: "bet", amount },
@@ -162,6 +177,7 @@ function App() {
             Bet
           </button>
           <button
+            disabled={!isSocketOpen}
             onClick={() =>
               sendJson(
                 { type: "player_action", actionType: "raise_to", amount },
@@ -171,8 +187,9 @@ function App() {
           >
             Raise To
           </button>
-          <button onClick={() => sendJson({ type: "player_action", actionType: "fold" }, "player_action:fold")}>Fold</button>
+          <button disabled={!isSocketOpen} onClick={() => sendJson({ type: "player_action", actionType: "fold" }, "player_action:fold")}>Fold</button>
           <button
+            disabled={!isSocketOpen}
             onClick={() => {
               const ws = wsRef.current;
               if (ws && ws.readyState === WebSocket.OPEN) {
@@ -209,7 +226,8 @@ function App() {
                 <th>Name</th>
                 <th>Seat</th>
                 <th>Stack</th>
-                <th>Committed</th>
+                <th>Committed (street)</th>
+                <th>Committed (hand)</th>
               </tr>
             </thead>
             <tbody>
@@ -218,7 +236,8 @@ function App() {
                   <td>{player.playerName}</td>
                   <td>{player.seatNumber ?? "open"}</td>
                   <td>{player.stack}</td>
-                  <td>{player.committedThisRound}</td>
+                  <td>{player.committedThisStreet}</td>
+                  <td>{player.committedThisHand}</td>
                 </tr>
               ))}
             </tbody>
@@ -234,6 +253,13 @@ function App() {
           {roomState?.round ? (
             <ul>
               <li>inProgress: {String(roomState.round.inProgress)}</li>
+              <li>street: {String(roomState.round.street)}</li>
+              <li>board: {roomState.round.board.join(" ") || "none"}</li>
+              <li>pot: {roomState.round.pot}</li>
+              <li>dealerSeatNumber: {String(roomState.round.dealerSeatNumber)}</li>
+              <li>smallBlindSeatNumber: {String(roomState.round.smallBlindSeatNumber)}</li>
+              <li>bigBlindSeatNumber: {String(roomState.round.bigBlindSeatNumber)}</li>
+              <li>blinds: {roomState.round.smallBlind}/{roomState.round.bigBlind}</li>
               <li>turnSeatNumber: {String(roomState.round.turnSeatNumber)}</li>
               <li>pendingSeatNumbers: {roomState.round.pendingSeatNumbers.join(", ") || "none"}</li>
               <li>currentBet: {roomState.round.currentBet}</li>

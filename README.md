@@ -46,11 +46,17 @@ Set websocket URL by copying `client/.env.example` to `client/.env.development` 
 - `sit_down`
 - `start_round`
 - `player_action` (`check`, `call`, `fold`, `bet`, `raise_to`)
-- room broadcast: `room_state` with player seats, stacks, committed chips, and round metadata (`pendingSeatNumbers`, `currentBet`, `minRaiseTo`)
+- room broadcast: `room_state` with player seats/stacks and round metadata (`street`, `board`, `pot`, blind seats, `pendingSeatNumbers`, `currentBet`, `minRaiseTo`)
 
 Current betting-round behavior:
 - round auto-ends with reason `betting_complete` when all active seats have responded to the latest bet/raise
 - round auto-ends with reason `fold_winner` when one active seat remains
+
+Current hand/street behavior:
+- `start_round` posts blinds automatically from table config
+- round starts on `preflop`
+- when betting settles before river, server auto-advances streets (`flop` -> `turn` -> `river`) and updates `board`
+- after river betting settles, round ends with `showdown_pending` (winner evaluation not implemented yet)
 
 ## Development model
 
@@ -65,7 +71,7 @@ Implementation (source, tests, CI, most docs) is **LLM-generated under maintaine
 
 Revise this section if the split changes materially.
 
-**Snapshot (2026-04-15):** Browser client exists (`client/`) and can join rooms, sit, start rounds, and test basic betting flows (`bet`, `raise_to`, `call`, `fold`) against the websocket backend.
+**Snapshot (2026-04-15):** Browser client exists (`client/`) and can run through a full preflop/flop/turn/river skeleton with blinds, basic betting, and street auto-advance. Showdown winner logic is not implemented yet.
 
 ## License
 

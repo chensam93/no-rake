@@ -31,18 +31,38 @@ bob.on("open", () => {
 });
 
 setTimeout(() => {
-  alice.send(JSON.stringify({ type: "player_action", actionType: "bet", amount: 40 }));
+  bob.send(JSON.stringify({ type: "player_action", actionType: "call" }));
 }, 350);
 
 setTimeout(() => {
-  bob.send(JSON.stringify({ type: "player_action", actionType: "raise_to", amount: 100 }));
+  alice.send(JSON.stringify({ type: "player_action", actionType: "check" }));
 }, 480);
 
 setTimeout(() => {
-  alice.send(JSON.stringify({ type: "player_action", actionType: "call" }));
+  bob.send(JSON.stringify({ type: "player_action", actionType: "check" }));
 }, 620);
+
+setTimeout(() => {
+  alice.send(JSON.stringify({ type: "player_action", actionType: "check" }));
+}, 760);
+
+setTimeout(() => {
+  bob.send(JSON.stringify({ type: "player_action", actionType: "check" }));
+}, 900);
+
+setTimeout(() => {
+  alice.send(JSON.stringify({ type: "player_action", actionType: "check" }));
+}, 1040);
+
+setTimeout(() => {
+  bob.send(JSON.stringify({ type: "player_action", actionType: "check" }));
+}, 1180);
+
+setTimeout(() => {
+  alice.send(JSON.stringify({ type: "player_action", actionType: "check" }));
+}, 1320);
 
 setTimeout(() => {
   alice.close();
   bob.close();
-}, 950);
+}, 1650);

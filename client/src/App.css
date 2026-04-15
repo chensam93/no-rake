@@ -55,6 +55,12 @@ button:hover {
   background: #f3f4f6;
 }
 
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #f3f4f6;
+}
+
 .buttons {
   margin-top: 1rem;
 }
@@ -123,6 +129,38 @@ ul {
 
 .players-table th {
   background: #f9fafb;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.status-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.status-open {
+  background: #dcfce7;
+  color: #14532d;
+}
+
+.status-connecting {
+  background: #fef9c3;
+  color: #713f12;
+}
+
+.status-closed,
+.status-error {
+  background: #fee2e2;
+  color: #7f1d1d;
 }
 
 @media (max-width: 900px) {

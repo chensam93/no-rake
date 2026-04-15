@@ -6,6 +6,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const OPEN = 1;
 const MAX_SEATS = 9;
 const STARTING_STACK = 1000;
+const STREETS = ["preflop", "flop", "turn", "river"];
 const PLAYER_ACTIONS = new Set(["fold", "check", "call", "bet", "raise_to"]);
 
 const rooms = new Map();
@@ -14,14 +15,57 @@ function sendJson(socket, payload) {
   socket.send(JSON.stringify(payload));
 }
 
+function buildDeck() {
+  const suits = ["c", "d", "h", "s"];
+  const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
+  const deck = [];
+  for (const suit of suits) {
+    for (const rank of ranks) {
+      deck.push(`${rank}${suit}`);
+    }
+  }
+  return deck;
+}
+
+function shuffle(array) {
+  const copy = [...array];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    const temp = copy[index];
+    copy[index] = copy[swapIndex];
+    copy[swapIndex] = temp;
+  }
+  return copy;
+}
+
+function drawCards(room, count) {
+  if (!room.hand.deck || room.hand.deck.length < count) {
+    return [];
+  }
+
+  return room.hand.deck.splice(0, count);
+}
+
 function getOrCreateRoom(roomId) {
   if (!rooms.has(roomId)) {
     rooms.set(roomId, {
       members: new Set(),
       playersBySocket: new Map(),
+      table: {
+        smallBlind: 10,
+        bigBlind: 20,
+        dealerSeatNumber: null,
+      },
       hand: {
         inProgress: false,
+        street: null,
+        board: [],
+        deck: [],
+        pot: 0,
         turnSeatNumber: null,
+        dealerSeatNumber: null,
+        smallBlindSeatNumber: null,
+        bigBlindSeatNumber: null,
         foldedSeatNumbers: new Set(),
         pendingSeatNumbers: new Set(),
         actionLog: [],
@@ -48,10 +92,37 @@ function getSeatedPlayers(room) {
   return getSortedPlayers(room).filter((player) => player.seatNumber !== null);
 }
 
+function getPlayerBySeatNumber(room, seatNumber) {
+  for (const player of room.playersBySocket.values()) {
+    if (player.seatNumber === seatNumber) {
+      return player;
+    }
+  }
+
+  return null;
+}
+
 function getActiveSeatNumbers(room) {
   return getSeatedPlayers(room)
     .map((player) => player.seatNumber)
     .filter((seatNumber) => !room.hand.foldedSeatNumbers.has(seatNumber));
+}
+
+function getNextSeatInList(seatNumbers, currentSeatNumber) {
+  if (seatNumbers.length === 0) return null;
+
+  const currentIndex = seatNumbers.indexOf(currentSeatNumber);
+  if (currentIndex === -1) {
+    return seatNumbers[0];
+  }
+
+  const nextIndex = (currentIndex + 1) % seatNumbers.length;
+  return seatNumbers[nextIndex];
+}
+
+function getNextActiveSeatAfter(room, currentSeatNumber) {
+  const activeSeatNumbers = getActiveSeatNumbers(room);
+  return getNextSeatInList(activeSeatNumbers, currentSeatNumber);
 }
 
 function getNextPendingTurnSeatNumber(room, currentSeatNumber) {
@@ -108,7 +179,7 @@ function maybeResolveHandAfterMembershipChange(room) {
   }
 
   if (room.hand.pendingSeatNumbers.size === 0) {
-    endRound(room, "betting_complete", null);
+    room.hand.turnSeatNumber = null;
     return;
   }
 
@@ -147,6 +218,14 @@ function publishRoomState(roomId) {
     players: getSortedPlayers(room),
     round: {
       inProgress: room.hand.inProgress,
+      street: room.hand.street,
+      board: room.hand.board,
+      pot: room.hand.pot,
+      dealerSeatNumber: room.hand.dealerSeatNumber,
+      smallBlindSeatNumber: room.hand.smallBlindSeatNumber,
+      bigBlindSeatNumber: room.hand.bigBlindSeatNumber,
+      smallBlind: room.table.smallBlind,
+      bigBlind: room.table.bigBlind,
       turnSeatNumber: room.hand.turnSeatNumber,
       foldedSeatNumbers: [...room.hand.foldedSeatNumbers].sort((left, right) => left - right),
       pendingSeatNumbers: [...room.hand.pendingSeatNumbers].sort((left, right) => left - right),
@@ -164,39 +243,132 @@ function publishRoomState(roomId) {
   }
 }
 
+function postBlind(room, seatNumber, amount, blindType) {
+  if (seatNumber === null) return;
+
+  const player = getPlayerBySeatNumber(room, seatNumber);
+  if (!player) return;
+
+  const blindAmount = Math.min(amount, player.stack);
+
+  player.stack -= blindAmount;
+  player.committedThisStreet += blindAmount;
+  player.committedThisHand += blindAmount;
+
+  room.hand.pot += blindAmount;
+  room.hand.currentBet = Math.max(room.hand.currentBet, player.committedThisStreet);
+
+  room.hand.actionLog.push({
+    seatNumber,
+    playerName: player.playerName,
+    actionType: blindType,
+    amountCommitted: blindAmount,
+    toCallBeforeAction: 0,
+    street: room.hand.street,
+  });
+}
+
 function startRound(room) {
   const seatedPlayers = getSeatedPlayers(room);
   if (seatedPlayers.length < 2) {
     return { ok: false, message: "need at least 2 seated players" };
   }
 
+  const seatedSeatNumbers = seatedPlayers.map((player) => player.seatNumber);
+
+  let dealerSeatNumber;
+  if (
+    room.table.dealerSeatNumber === null ||
+    !seatedSeatNumbers.includes(room.table.dealerSeatNumber)
+  ) {
+    dealerSeatNumber = seatedSeatNumbers[0];
+  } else {
+    dealerSeatNumber = getNextSeatInList(seatedSeatNumbers, room.table.dealerSeatNumber);
+  }
+
+  room.table.dealerSeatNumber = dealerSeatNumber;
+
+  const smallBlindSeatNumber = getNextSeatInList(seatedSeatNumbers, dealerSeatNumber);
+  const bigBlindSeatNumber = getNextSeatInList(seatedSeatNumbers, smallBlindSeatNumber);
+
   room.hand.inProgress = true;
+  room.hand.street = "preflop";
+  room.hand.board = [];
+  room.hand.deck = shuffle(buildDeck());
+  room.hand.pot = 0;
   room.hand.foldedSeatNumbers.clear();
-  room.hand.pendingSeatNumbers = new Set(seatedPlayers.map((player) => player.seatNumber));
+  room.hand.pendingSeatNumbers = new Set(seatedSeatNumbers);
   room.hand.actionLog = [];
-  room.hand.turnSeatNumber = seatedPlayers[0].seatNumber;
+  room.hand.turnSeatNumber = null;
   room.hand.currentBet = 0;
   room.hand.minRaiseTo = null;
   room.hand.lastEndReason = null;
+  room.hand.dealerSeatNumber = dealerSeatNumber;
+  room.hand.smallBlindSeatNumber = smallBlindSeatNumber;
+  room.hand.bigBlindSeatNumber = bigBlindSeatNumber;
 
   for (const player of room.playersBySocket.values()) {
-    player.committedThisRound = 0;
+    player.committedThisStreet = 0;
+    player.committedThisHand = 0;
   }
+
+  postBlind(room, smallBlindSeatNumber, room.table.smallBlind, "post_small_blind");
+  postBlind(room, bigBlindSeatNumber, room.table.bigBlind, "post_big_blind");
+
+  room.hand.minRaiseTo = room.hand.currentBet + room.table.bigBlind;
+  room.hand.turnSeatNumber = getNextActiveSeatAfter(room, bigBlindSeatNumber);
 
   return {
     ok: true,
     turnSeatNumber: room.hand.turnSeatNumber,
+    street: room.hand.street,
   };
 }
 
 function getPlayerToCallAmount(room, player) {
-  return Math.max(0, room.hand.currentBet - player.committedThisRound);
+  return Math.max(0, room.hand.currentBet - player.committedThisStreet);
 }
 
 function maybeEndRoundOnFold(room) {
   const activeSeatNumbers = getActiveSeatNumbers(room);
   if (activeSeatNumbers.length > 1) return null;
   return endRound(room, "fold_winner", activeSeatNumbers[0] ?? null);
+}
+
+function advanceStreet(room) {
+  const currentStreetIndex = STREETS.indexOf(room.hand.street);
+  if (currentStreetIndex === -1 || currentStreetIndex >= STREETS.length - 1) {
+    return null;
+  }
+
+  const nextStreet = STREETS[currentStreetIndex + 1];
+
+  let drawnCards = [];
+  if (nextStreet === "flop") {
+    drawnCards = drawCards(room, 3);
+  } else {
+    drawnCards = drawCards(room, 1);
+  }
+
+  room.hand.street = nextStreet;
+  room.hand.board.push(...drawnCards);
+  room.hand.currentBet = 0;
+  room.hand.minRaiseTo = null;
+
+  const activeSeatNumbers = getActiveSeatNumbers(room);
+  room.hand.pendingSeatNumbers = new Set(activeSeatNumbers);
+
+  for (const player of room.playersBySocket.values()) {
+    player.committedThisStreet = 0;
+  }
+
+  room.hand.turnSeatNumber = getNextActiveSeatAfter(room, room.hand.dealerSeatNumber);
+
+  return {
+    street: nextStreet,
+    boardCards: drawnCards,
+    turnSeatNumber: room.hand.turnSeatNumber,
+  };
 }
 
 function renderSmokePage() {
@@ -216,7 +388,7 @@ function renderSmokePage() {
   </head>
   <body>
     <h1>No Rake</h1>
-    <p>Step 9 smoke test for room, seats, and basic betting actions.</p>
+    <p>Step 11 smoke test for street progression skeleton.</p>
     <p>Socket URL: <code>ws://127.0.0.1:${PORT}/ws</code></p>
 
     <div class="row">
@@ -362,7 +534,8 @@ app.get("/ws", { websocket: true }, (socket) => {
         playerName,
         seatNumber: null,
         stack: STARTING_STACK,
-        committedThisRound: 0,
+        committedThisStreet: 0,
+        committedThisHand: 0,
       });
 
       sendJson(socket, {
@@ -460,6 +633,7 @@ app.get("/ws", { websocket: true }, (socket) => {
         type: "round_started",
         roomId: session.roomId,
         turnSeatNumber: result.turnSeatNumber,
+        street: result.street,
       });
 
       publishRoomState(session.roomId);
@@ -537,7 +711,9 @@ app.get("/ws", { websocket: true }, (socket) => {
         }
 
         currentPlayer.stack -= toCall;
-        currentPlayer.committedThisRound += toCall;
+        currentPlayer.committedThisStreet += toCall;
+        currentPlayer.committedThisHand += toCall;
+        room.hand.pot += toCall;
         amountCommitted = toCall;
         room.hand.pendingSeatNumbers.delete(currentPlayer.seatNumber);
       } else if (actionType === "bet") {
@@ -564,8 +740,11 @@ app.get("/ws", { websocket: true }, (socket) => {
         }
 
         currentPlayer.stack -= amount;
-        currentPlayer.committedThisRound += amount;
-        room.hand.currentBet = currentPlayer.committedThisRound;
+        currentPlayer.committedThisStreet += amount;
+        currentPlayer.committedThisHand += amount;
+        room.hand.pot += amount;
+
+        room.hand.currentBet = currentPlayer.committedThisStreet;
         room.hand.minRaiseTo = room.hand.currentBet * 2;
         amountCommitted = amount;
         note = `currentBet=${room.hand.currentBet}`;
@@ -602,7 +781,7 @@ app.get("/ws", { websocket: true }, (socket) => {
           return;
         }
 
-        const amountToCommit = targetAmount - currentPlayer.committedThisRound;
+        const amountToCommit = targetAmount - currentPlayer.committedThisStreet;
         if (amountToCommit <= 0) {
           sendJson(socket, {
             type: "error",
@@ -622,8 +801,11 @@ app.get("/ws", { websocket: true }, (socket) => {
         const previousCurrentBet = room.hand.currentBet;
 
         currentPlayer.stack -= amountToCommit;
-        currentPlayer.committedThisRound += amountToCommit;
-        room.hand.currentBet = currentPlayer.committedThisRound;
+        currentPlayer.committedThisStreet += amountToCommit;
+        currentPlayer.committedThisHand += amountToCommit;
+        room.hand.pot += amountToCommit;
+
+        room.hand.currentBet = currentPlayer.committedThisStreet;
 
         const raiseIncrement = room.hand.currentBet - previousCurrentBet;
         room.hand.minRaiseTo = room.hand.currentBet + raiseIncrement;
@@ -647,6 +829,7 @@ app.get("/ws", { websocket: true }, (socket) => {
         actionType,
         amountCommitted,
         toCallBeforeAction: toCall,
+        street: room.hand.street,
       });
 
       const foldEndResult = maybeEndRoundOnFold(room);
@@ -663,13 +846,39 @@ app.get("/ws", { websocket: true }, (socket) => {
       }
 
       if (room.hand.pendingSeatNumbers.size === 0) {
-        const completeResult = endRound(room, "betting_complete", null);
+        if (room.hand.street === "river") {
+          const completeResult = endRound(room, "showdown_pending", null);
+          sendJson(socket, {
+            type: "round_ended",
+            roomId: session.roomId,
+            winnerSeatNumber: completeResult.winnerSeatNumber,
+            reason: completeResult.reason,
+          });
+          publishRoomState(session.roomId);
+          return;
+        }
+
+        const transition = advanceStreet(room);
+        if (!transition) {
+          const fallbackResult = endRound(room, "street_advance_failed", null);
+          sendJson(socket, {
+            type: "round_ended",
+            roomId: session.roomId,
+            winnerSeatNumber: fallbackResult.winnerSeatNumber,
+            reason: fallbackResult.reason,
+          });
+          publishRoomState(session.roomId);
+          return;
+        }
+
         sendJson(socket, {
-          type: "round_ended",
+          type: "street_advanced",
           roomId: session.roomId,
-          winnerSeatNumber: completeResult.winnerSeatNumber,
-          reason: completeResult.reason,
+          street: transition.street,
+          boardCards: transition.boardCards,
+          turnSeatNumber: transition.turnSeatNumber,
         });
+
         publishRoomState(session.roomId);
         return;
       }
