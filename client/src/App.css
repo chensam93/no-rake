@@ -1,0 +1,116 @@
+.app-shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+h1,
+h2 {
+  margin: 0 0 0.5rem;
+}
+
+.sub {
+  margin: 0;
+  color: #4b5563;
+}
+
+.card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+input {
+  border: 1px solid #d1d5db;
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.55rem;
+  min-width: 8rem;
+}
+
+button {
+  border: 1px solid #9ca3af;
+  background: #f9fafb;
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #f3f4f6;
+}
+
+.buttons {
+  margin-top: 1rem;
+}
+
+.error {
+  margin-top: 0.75rem;
+  color: #991b1b;
+}
+
+.seat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.seat {
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  padding: 0.6rem;
+  background: #f9fafb;
+}
+
+.seat-number {
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
+.seat-player {
+  font-weight: 600;
+  margin-top: 0.2rem;
+}
+
+.state-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+pre {
+  margin: 0;
+  background: #111827;
+  color: #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  overflow: auto;
+  max-height: 18rem;
+  font-size: 0.82rem;
+}
+
+ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+
+@media (max-width: 900px) {
+  .state-grid {
+    grid-template-columns: 1fr;
+  }
+}
