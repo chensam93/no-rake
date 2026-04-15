@@ -5,7 +5,9 @@
     "scripts": {
         "start": "node src/index.js",
         "dev": "node --watch src/index.js",
-        "simulate:round": "node scripts/simulate-round.mjs"
+        "simulate:round": "node scripts/simulate-round.mjs",
+        "smoke:two-player": "node scripts/smoke-two-player.mjs",
+        "test:rules": "npm run simulate:round && npm run smoke:two-player"
     },
     "dependencies": {
         "@fastify/websocket": "^11.2.0",

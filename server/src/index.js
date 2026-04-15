@@ -1,5 +1,21 @@
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
+import {
+  compareHandRanks as compareHandRanksFromModule,
+  evaluateBestHand as evaluateBestHandFromModule,
+  formatRankLabel as formatRankLabelFromModule,
+} from "./engine/handEvaluator.js";
+import {
+  buildPotsFromCommitments as buildPotsFromCommitmentsFromModule,
+  resolvePots as resolvePotsFromModule,
+} from "./engine/potResolution.js";
+import { doesRaiseReopenAction } from "./engine/bettingRules.js";
+import { progressRoundWhenNoPending as progressRoundWhenNoPendingFromModule } from "./engine/roundProgression.js";
+import {
+  buildPendingSeatsAfterAggressiveAction,
+  buildRaiseClosedSeatNumbers,
+} from "./engine/actionState.js";
+import { validateBetAmount, validateRaiseTarget } from "./engine/actionValidation.js";
 
 const app = Fastify({ logger: true });
 const PORT = Number(process.env.PORT) || 3000;
@@ -8,6 +24,36 @@ const MAX_SEATS = 9;
 const STARTING_STACK = 1000;
 const STREETS = ["preflop", "flop", "turn", "river"];
 const PLAYER_ACTIONS = new Set(["fold", "check", "call", "bet", "raise_to"]);
+const RANK_TO_VALUE = {
+  "2": 2,
+  "3": 3,
+  "4": 4,
+  "5": 5,
+  "6": 6,
+  "7": 7,
+  "8": 8,
+  "9": 9,
+  T: 10,
+  J: 11,
+  Q: 12,
+  K: 13,
+  A: 14,
+};
+const VALUE_TO_RANK = {
+  2: "2",
+  3: "3",
+  4: "4",
+  5: "5",
+  6: "6",
+  7: "7",
+  8: "8",
+  9: "9",
+  10: "T",
+  11: "J",
+  12: "Q",
+  13: "K",
+  14: "A",
+};
 
 const rooms = new Map();
 
@@ -46,15 +92,181 @@ function drawCards(room, count) {
   return room.hand.deck.splice(0, count);
 }
 
+function parseCard(card) {
+  if (!card || typeof card !== "string" || card.length < 2) return null;
+  const rank = card.slice(0, -1);
+  const suit = card.slice(-1);
+  const value = RANK_TO_VALUE[rank];
+  if (!value || !["c", "d", "h", "s"].includes(suit)) return null;
+  return { rank, suit, value, raw: card };
+}
+
+function getStraightHigh(values) {
+  const uniqueValues = [...new Set(values)].sort((left, right) => right - left);
+  if (uniqueValues.includes(14)) {
+    uniqueValues.push(1);
+  }
+
+  let runLength = 1;
+  let bestHigh = null;
+  for (let index = 1; index < uniqueValues.length; index += 1) {
+    const previousValue = uniqueValues[index - 1];
+    const currentValue = uniqueValues[index];
+    if (previousValue - 1 === currentValue) {
+      runLength += 1;
+      if (runLength >= 5) {
+        bestHigh = uniqueValues[index - 4];
+        break;
+      }
+    } else {
+      runLength = 1;
+    }
+  }
+  return bestHigh;
+}
+
+function evaluateFiveCards(rawCards) {
+  const cards = rawCards.map(parseCard).filter(Boolean);
+  if (cards.length !== 5) {
+    return null;
+  }
+
+  const values = cards.map((card) => card.value);
+  const suits = cards.map((card) => card.suit);
+  const isFlush = suits.every((suit) => suit === suits[0]);
+  const straightHigh = getStraightHigh(values);
+  const isStraight = straightHigh !== null;
+
+  const countsByValue = new Map();
+  for (const value of values) {
+    countsByValue.set(value, (countsByValue.get(value) || 0) + 1);
+  }
+  const valueCountEntries = [...countsByValue.entries()].sort((left, right) => {
+    const countDelta = right[1] - left[1];
+    if (countDelta !== 0) return countDelta;
+    return right[0] - left[0];
+  });
+
+  if (isStraight && isFlush) {
+    return {
+      category: 8,
+      categoryName: "straight_flush",
+      tiebreakers: [straightHigh],
+    };
+  }
+
+  if (valueCountEntries[0][1] === 4) {
+    const fourValue = valueCountEntries[0][0];
+    const kicker = valueCountEntries[1][0];
+    return {
+      category: 7,
+      categoryName: "four_of_a_kind",
+      tiebreakers: [fourValue, kicker],
+    };
+  }
+
+  if (valueCountEntries[0][1] === 3 && valueCountEntries[1][1] === 2) {
+    return {
+      category: 6,
+      categoryName: "full_house",
+      tiebreakers: [valueCountEntries[0][0], valueCountEntries[1][0]],
+    };
+  }
+
+  if (isFlush) {
+    const sortedValues = [...values].sort((left, right) => right - left);
+    return {
+      category: 5,
+      categoryName: "flush",
+      tiebreakers: sortedValues,
+    };
+  }
+
+  if (isStraight) {
+    return {
+      category: 4,
+      categoryName: "straight",
+      tiebreakers: [straightHigh],
+    };
+  }
+
+  if (valueCountEntries[0][1] === 3) {
+    const tripsValue = valueCountEntries[0][0];
+    const kickers = valueCountEntries
+      .slice(1)
+      .map(([value]) => value)
+      .sort((left, right) => right - left);
+    return {
+      category: 3,
+      categoryName: "three_of_a_kind",
+      tiebreakers: [tripsValue, ...kickers],
+    };
+  }
+
+  if (valueCountEntries[0][1] === 2 && valueCountEntries[1][1] === 2) {
+    const pairValues = valueCountEntries
+      .filter(([, count]) => count === 2)
+      .map(([value]) => value)
+      .sort((left, right) => right - left);
+    const kicker = valueCountEntries.find(([, count]) => count === 1)[0];
+    return {
+      category: 2,
+      categoryName: "two_pair",
+      tiebreakers: [...pairValues, kicker],
+    };
+  }
+
+  if (valueCountEntries[0][1] === 2) {
+    const pairValue = valueCountEntries[0][0];
+    const kickers = valueCountEntries
+      .slice(1)
+      .map(([value]) => value)
+      .sort((left, right) => right - left);
+    return {
+      category: 1,
+      categoryName: "one_pair",
+      tiebreakers: [pairValue, ...kickers],
+    };
+  }
+
+  const highCards = [...values].sort((left, right) => right - left);
+  return {
+    category: 0,
+    categoryName: "high_card",
+    tiebreakers: highCards,
+  };
+}
+
+function compareHandRanks(leftRank, rightRank) {
+  return compareHandRanksFromModule(leftRank, rightRank);
+}
+
+function evaluateBestHand(sevenCards) {
+  return evaluateBestHandFromModule(sevenCards);
+}
+
+function formatValue(value) {
+  return VALUE_TO_RANK[value] ?? String(value);
+}
+
+function formatRankLabel(rank) {
+  return formatRankLabelFromModule(rank);
+}
+
 function getOrCreateRoom(roomId) {
   if (!rooms.has(roomId)) {
     rooms.set(roomId, {
+      id: roomId,
       members: new Set(),
       playersBySocket: new Map(),
+      hostSocket: null,
+      autoStartTimer: null,
       table: {
         smallBlind: 10,
         bigBlind: 20,
         dealerSeatNumber: null,
+        autoDealEnabled: true,
+        autoDealDelayMs: 1800,
       },
       hand: {
         inProgress: false,
@@ -68,10 +280,16 @@ function getOrCreateRoom(roomId) {
         bigBlindSeatNumber: null,
         foldedSeatNumbers: new Set(),
         pendingSeatNumbers: new Set(),
+        raiseClosedSeatNumbers: new Set(),
         actionLog: [],
         currentBet: 0,
         minRaiseTo: null,
         lastEndReason: null,
+        lastWinnerSeatNumber: null,
+        lastWinnerSeatNumbers: [],
+        lastPayouts: [],
+        lastShowdown: null,
+        lastPotBreakdown: [],
       },
     });
   }
@@ -108,6 +326,16 @@ function getActiveSeatNumbers(room) {
     .filter((seatNumber) => !room.hand.foldedSeatNumbers.has(seatNumber));
 }
 
+function getActionEligibleSeatNumbers(room) {
+  return getSeatedPlayers(room)
+    .filter(
+      (player) =>
+        !room.hand.foldedSeatNumbers.has(player.seatNumber) &&
+        Number(player.stack ?? 0) > 0,
+    )
+    .map((player) => player.seatNumber);
+}
+
 function getNextSeatInList(seatNumbers, currentSeatNumber) {
   if (seatNumbers.length === 0) return null;
 
@@ -126,24 +354,24 @@ function getNextActiveSeatAfter(room, currentSeatNumber) {
 }
 
 function getNextPendingTurnSeatNumber(room, currentSeatNumber) {
-  const activeSeatNumbers = getActiveSeatNumbers(room);
-  if (activeSeatNumbers.length === 0) return null;
+  const eligibleSeatNumbers = getActionEligibleSeatNumbers(room);
+  if (eligibleSeatNumbers.length === 0) return null;
 
   const pendingSeatNumbers = room.hand.pendingSeatNumbers;
-  const seatsNeedingAction = activeSeatNumbers.filter((seatNumber) =>
+  const seatsNeedingAction = eligibleSeatNumbers.filter((seatNumber) =>
     pendingSeatNumbers.has(seatNumber),
   );
 
   if (seatsNeedingAction.length === 0) return null;
 
-  const currentIndex = activeSeatNumbers.indexOf(currentSeatNumber);
+  const currentIndex = eligibleSeatNumbers.indexOf(currentSeatNumber);
   if (currentIndex === -1) {
     return seatsNeedingAction[0];
   }
 
-  for (let step = 1; step <= activeSeatNumbers.length; step += 1) {
-    const index = (currentIndex + step) % activeSeatNumbers.length;
-    const seatNumber = activeSeatNumbers[index];
+  for (let step = 1; step <= eligibleSeatNumbers.length; step += 1) {
+    const index = (currentIndex + step) % eligibleSeatNumbers.length;
+    const seatNumber = eligibleSeatNumbers[index];
     if (pendingSeatNumbers.has(seatNumber)) {
       return seatNumber;
     }
@@ -152,15 +380,174 @@ function getNextPendingTurnSeatNumber(room, currentSeatNumber) {
   return seatsNeedingAction[0];
 }
 
-function endRound(room, reason, winnerSeatNumber = null) {
+function applyPotPayout(room, winnerSeatNumbers) {
+  if (!Array.isArray(winnerSeatNumbers) || winnerSeatNumbers.length === 0) {
+    return [];
+  }
+
+  const uniqueWinners = [...new Set(winnerSeatNumbers)].sort((left, right) => left - right);
+  if (room.hand.pot <= 0) {
+    return uniqueWinners.map((seatNumber) => ({ seatNumber, amount: 0 }));
+  }
+
+  const splitAmount = Math.floor(room.hand.pot / uniqueWinners.length);
+  const remainder = room.hand.pot % uniqueWinners.length;
+  const payouts = [];
+
+  for (let index = 0; index < uniqueWinners.length; index += 1) {
+    const seatNumber = uniqueWinners[index];
+    const amount = splitAmount + (index < remainder ? 1 : 0);
+    const player = getPlayerBySeatNumber(room, seatNumber);
+    if (player) {
+      player.stack += amount;
+    }
+    payouts.push({ seatNumber, amount });
+  }
+
+  room.hand.pot = 0;
+  return payouts;
+}
+
+function buildPotsFromCommitments(room) {
+  const contributors = getSeatedPlayers(room)
+    .filter((player) => (player.committedThisHand ?? 0) > 0)
+    .map((player) => ({
+      seatNumber: player.seatNumber,
+      committed: player.committedThisHand ?? 0,
+      folded: room.hand.foldedSeatNumbers.has(player.seatNumber),
+    }));
+
+  return buildPotsFromCommitmentsFromModule(contributors);
+}
+
+function distributePots(room, pots, resultsBySeat) {
+  const { payouts, potBreakdown, totalPaid } = resolvePotsFromModule(
+    pots,
+    resultsBySeat,
+    compareHandRanks,
+  );
+
+  for (const payout of payouts) {
+    const player = getPlayerBySeatNumber(room, payout.seatNumber);
+    if (player) {
+      player.stack += payout.amount;
+    }
+  }
+
+  room.hand.pot = Math.max(0, room.hand.pot - totalPaid);
+
+  return { payouts, potBreakdown };
+}
+
+function endRound(room, reason, options = {}) {
+  const normalizedOptions = options && typeof options === "object" ? options : {};
+  const winnerSeatNumbers = normalizedOptions.winnerSeatNumbers ?? [];
+  const winnerSeatNumber =
+    normalizedOptions.winnerSeatNumber ??
+    (winnerSeatNumbers.length > 0 ? winnerSeatNumbers[0] : null);
+
   room.hand.inProgress = false;
   room.hand.turnSeatNumber = null;
   room.hand.currentBet = 0;
   room.hand.minRaiseTo = null;
   room.hand.pendingSeatNumbers.clear();
+  room.hand.raiseClosedSeatNumbers.clear();
   room.hand.lastEndReason = reason;
+  room.hand.lastWinnerSeatNumber = winnerSeatNumber;
+  room.hand.lastWinnerSeatNumbers = winnerSeatNumbers;
+  room.hand.lastPayouts = normalizedOptions.payouts ?? [];
+  room.hand.lastShowdown = normalizedOptions.showdown ?? null;
+  room.hand.lastPotBreakdown = normalizedOptions.potBreakdown ?? [];
+  maybeScheduleAutoStart(room, reason);
 
-  return { reason, winnerSeatNumber };
+  return {
+    reason,
+    winnerSeatNumber,
+    winnerSeatNumbers,
+    payouts: room.hand.lastPayouts,
+    showdown: room.hand.lastShowdown,
+    potBreakdown: room.hand.lastPotBreakdown,
+  };
+}
+
+function finishRoundWithWinners(room, reason, winnerSeatNumbers, showdown = null) {
+  const payouts = applyPotPayout(room, winnerSeatNumbers);
+  return endRound(room, reason, {
+    winnerSeatNumbers,
+    payouts,
+    showdown,
+    potBreakdown: [
+      {
+        amount: payouts.reduce((sum, payout) => sum + payout.amount, 0),
+        winnerSeatNumbers: winnerSeatNumbers ?? [],
+        payouts,
+      },
+    ],
+  });
+}
+
+function resolveShowdown(room) {
+  const activePlayers = getSeatedPlayers(room).filter(
+    (player) => !room.hand.foldedSeatNumbers.has(player.seatNumber),
+  );
+  if (activePlayers.length === 0) {
+    return endRound(room, "showdown_no_players");
+  }
+
+  const results = [];
+  for (const player of activePlayers) {
+    const allCards = [...(player.holeCards ?? []), ...room.hand.board];
+    const best = evaluateBestHand(allCards);
+    if (!best) continue;
+    results.push({
+      seatNumber: player.seatNumber,
+      playerName: player.playerName,
+      bestCards: best.cards,
+      rank: best.rank,
+      rankLabel: formatRankLabel(best.rank),
+    });
+  }
+
+  if (results.length === 0) {
+    return endRound(room, "showdown_invalid_cards");
+  }
+
+  const resultsBySeat = new Map(results.map((result) => [result.seatNumber, result]));
+
+  let bestResult = results[0];
+  for (const result of results.slice(1)) {
+    if (compareHandRanks(result.rank, bestResult.rank) > 0) {
+      bestResult = result;
+    }
+  }
+
+  const winners = results
+    .filter((result) => compareHandRanks(result.rank, bestResult.rank) === 0)
+    .map((result) => result.seatNumber)
+    .sort((left, right) => left - right);
+
+  const showdown = {
+    winningHandLabel: bestResult.rankLabel,
+    winningCards: bestResult.bestCards,
+    boardCards: [...room.hand.board],
+    players: results.map((result) => ({
+      seatNumber: result.seatNumber,
+      playerName: result.playerName,
+      bestCards: result.bestCards,
+      rankLabel: result.rankLabel,
+    })),
+  };
+  const pots = buildPotsFromCommitments(room);
+  if (pots.length === 0) {
+    return finishRoundWithWinners(room, "showdown", winners, showdown);
+  }
+  const potResolution = distributePots(room, pots, resultsBySeat);
+  return endRound(room, "showdown", {
+    winnerSeatNumbers: winners,
+    payouts: potResolution.payouts,
+    potBreakdown: potResolution.potBreakdown,
+    showdown,
+  });
 }
 
 function maybeResolveHandAfterMembershipChange(room) {
@@ -168,13 +555,18 @@ function maybeResolveHandAfterMembershipChange(room) {
 
   const activeSeatNumbers = getActiveSeatNumbers(room);
   for (const pendingSeatNumber of [...room.hand.pendingSeatNumbers]) {
-    if (!activeSeatNumbers.includes(pendingSeatNumber)) {
+    const player = getPlayerBySeatNumber(room, pendingSeatNumber);
+    if (!activeSeatNumbers.includes(pendingSeatNumber) || Number(player?.stack ?? 0) <= 0) {
       room.hand.pendingSeatNumbers.delete(pendingSeatNumber);
     }
   }
 
   if (activeSeatNumbers.length <= 1) {
-    endRound(room, "fold_winner", activeSeatNumbers[0] ?? null);
+    if (activeSeatNumbers.length === 1) {
+      finishRoundWithWinners(room, "fold_winner", [activeSeatNumbers[0]]);
+    } else {
+      endRound(room, "all_left_table");
+    }
     return;
   }
 
@@ -195,15 +587,79 @@ function maybeResolveHandAfterMembershipChange(room) {
   }
 }
 
+function progressRoundWhenNoPending(room) {
+  return progressRoundWhenNoPendingFromModule(room, {
+    resolveShowdown,
+    advanceStreet,
+    endRound,
+  });
+}
+
+function clearAutoStartTimer(room) {
+  if (room.autoStartTimer) {
+    clearTimeout(room.autoStartTimer);
+    room.autoStartTimer = null;
+  }
+}
+
+function getHostPlayerName(room) {
+  if (!room.hostSocket) return null;
+  const hostPlayer = room.playersBySocket.get(room.hostSocket);
+  return hostPlayer?.playerName ?? null;
+}
+
+function maybeScheduleAutoStart(room, reason = null) {
+  clearAutoStartTimer(room);
+
+  const autoDealReasons = new Set(["fold_winner", "showdown"]);
+  if (reason && !autoDealReasons.has(reason)) return;
+  if (room.hand.inProgress) return;
+  if (!room.table.autoDealEnabled) return;
+  if (getSeatedPlayers(room).length < 2) return;
+
+  const delayMs = room.table.autoDealDelayMs ?? 1800;
+  room.autoStartTimer = setTimeout(() => {
+    room.autoStartTimer = null;
+
+    if (!rooms.has(room.id)) return;
+    if (room.hand.inProgress) return;
+    if (!room.table.autoDealEnabled) return;
+
+    const result = startRound(room);
+    if (!result.ok) return;
+
+    for (const member of room.members) {
+      if (member.readyState === OPEN) {
+        sendJson(member, {
+          type: "round_started",
+          roomId: room.id,
+          turnSeatNumber: result.turnSeatNumber,
+          street: result.street,
+          auto: true,
+        });
+      }
+    }
+
+    publishRoomState(room.id);
+  }, delayMs);
+}
+
 function removeSocketFromRoom(roomId, socket) {
   const room = rooms.get(roomId);
   if (!room) return;
 
+  const wasHost = room.hostSocket === socket;
   room.members.delete(socket);
   room.playersBySocket.delete(socket);
+
+  if (wasHost) {
+    room.hostSocket = room.members.values().next().value ?? null;
+  }
+
   maybeResolveHandAfterMembershipChange(room);
 
   if (room.members.size === 0) {
+    clearAutoStartTimer(room);
     rooms.delete(roomId);
   }
 }
@@ -215,6 +671,13 @@ function publishRoomState(roomId) {
   const payload = {
     type: "room_state",
     roomId,
+    table: {
+      smallBlind: room.table.smallBlind,
+      bigBlind: room.table.bigBlind,
+      autoDealEnabled: room.table.autoDealEnabled,
+      autoDealDelayMs: room.table.autoDealDelayMs,
+      hostPlayerName: getHostPlayerName(room),
+    },
     players: getSortedPlayers(room),
     round: {
       inProgress: room.hand.inProgress,
@@ -232,6 +695,11 @@ function publishRoomState(roomId) {
       currentBet: room.hand.currentBet,
       minRaiseTo: room.hand.minRaiseTo,
       lastEndReason: room.hand.lastEndReason,
+      lastWinnerSeatNumber: room.hand.lastWinnerSeatNumber,
+      lastWinnerSeatNumbers: room.hand.lastWinnerSeatNumbers,
+      lastPayouts: room.hand.lastPayouts,
+      lastShowdown: room.hand.lastShowdown,
+      lastPotBreakdown: room.hand.lastPotBreakdown,
       actionLog: room.hand.actionLog,
     },
   };
@@ -274,6 +742,8 @@ function startRound(room) {
     return { ok: false, message: "need at least 2 seated players" };
   }
 
+  clearAutoStartTimer(room);
+
   const seatedSeatNumbers = seatedPlayers.map((player) => player.seatNumber);
 
   let dealerSeatNumber;
@@ -298,11 +768,17 @@ function startRound(room) {
   room.hand.pot = 0;
   room.hand.foldedSeatNumbers.clear();
   room.hand.pendingSeatNumbers = new Set(seatedSeatNumbers);
+  room.hand.raiseClosedSeatNumbers.clear();
   room.hand.actionLog = [];
   room.hand.turnSeatNumber = null;
   room.hand.currentBet = 0;
   room.hand.minRaiseTo = null;
   room.hand.lastEndReason = null;
+  room.hand.lastWinnerSeatNumber = null;
+  room.hand.lastWinnerSeatNumbers = [];
+  room.hand.lastPayouts = [];
+  room.hand.lastShowdown = null;
+  room.hand.lastPotBreakdown = [];
   room.hand.dealerSeatNumber = dealerSeatNumber;
   room.hand.smallBlindSeatNumber = smallBlindSeatNumber;
   room.hand.bigBlindSeatNumber = bigBlindSeatNumber;
@@ -310,13 +786,23 @@ function startRound(room) {
   for (const player of room.playersBySocket.values()) {
     player.committedThisStreet = 0;
     player.committedThisHand = 0;
+    player.holeCards = [];
+  }
+
+  // Dev-friendly: deal and reveal hole cards to simplify UI testing.
+  for (const player of getSeatedPlayers(room)) {
+    player.holeCards = drawCards(room, 2);
   }
 
   postBlind(room, smallBlindSeatNumber, room.table.smallBlind, "post_small_blind");
   postBlind(room, bigBlindSeatNumber, room.table.bigBlind, "post_big_blind");
 
   room.hand.minRaiseTo = room.hand.currentBet + room.table.bigBlind;
-  room.hand.turnSeatNumber = getNextActiveSeatAfter(room, bigBlindSeatNumber);
+  room.hand.pendingSeatNumbers = new Set(getActionEligibleSeatNumbers(room));
+  room.hand.turnSeatNumber = getNextPendingTurnSeatNumber(room, bigBlindSeatNumber);
+  if (room.hand.turnSeatNumber === null) {
+    room.hand.turnSeatNumber = getNextActiveSeatAfter(room, bigBlindSeatNumber);
+  }
 
   return {
     ok: true,
@@ -332,7 +818,10 @@ function getPlayerToCallAmount(room, player) {
 function maybeEndRoundOnFold(room) {
   const activeSeatNumbers = getActiveSeatNumbers(room);
   if (activeSeatNumbers.length > 1) return null;
-  return endRound(room, "fold_winner", activeSeatNumbers[0] ?? null);
+  if (activeSeatNumbers.length === 1) {
+    return finishRoundWithWinners(room, "fold_winner", [activeSeatNumbers[0]]);
+  }
+  return endRound(room, "all_folded");
 }
 
 function advanceStreet(room) {
@@ -356,13 +845,22 @@ function advanceStreet(room) {
   room.hand.minRaiseTo = null;
 
   const activeSeatNumbers = getActiveSeatNumbers(room);
-  room.hand.pendingSeatNumbers = new Set(activeSeatNumbers);
+  room.hand.pendingSeatNumbers = new Set(
+    activeSeatNumbers.filter((seatNumber) => {
+      const player = getPlayerBySeatNumber(room, seatNumber);
+      return Number(player?.stack ?? 0) > 0;
+    }),
+  );
+  room.hand.raiseClosedSeatNumbers.clear();
 
   for (const player of room.playersBySocket.values()) {
     player.committedThisStreet = 0;
   }
 
-  room.hand.turnSeatNumber = getNextActiveSeatAfter(room, room.hand.dealerSeatNumber);
+  room.hand.turnSeatNumber = getNextPendingTurnSeatNumber(
+    room,
+    room.hand.dealerSeatNumber,
+  );
 
   return {
     street: nextStreet,
@@ -487,6 +985,7 @@ app.get("/ws", { websocket: true }, (socket) => {
       "join_room",
       "sit_down",
       "start_round",
+      "set_auto_deal",
       "player_action:check/call/fold/bet/raise_to",
       "ping-*",
     ],
@@ -530,12 +1029,16 @@ app.get("/ws", { websocket: true }, (socket) => {
 
       const room = getOrCreateRoom(roomId);
       room.members.add(socket);
+      if (!room.hostSocket) {
+        room.hostSocket = socket;
+      }
       room.playersBySocket.set(socket, {
         playerName,
         seatNumber: null,
         stack: STARTING_STACK,
         committedThisStreet: 0,
         committedThisHand: 0,
+        holeCards: [],
       });
 
       sendJson(socket, {
@@ -545,6 +1048,46 @@ app.get("/ws", { websocket: true }, (socket) => {
       });
 
       publishRoomState(roomId);
+      return;
+    }
+
+    if (parsed.type === "set_auto_deal") {
+      if (!session.roomId) {
+        sendJson(socket, { type: "error", message: "join_room before set_auto_deal" });
+        return;
+      }
+
+      const room = rooms.get(session.roomId);
+      if (!room) {
+        sendJson(socket, { type: "error", message: "room not found" });
+        return;
+      }
+
+      if (room.hostSocket !== socket) {
+        sendJson(socket, { type: "error", message: "only host can change auto deal settings" });
+        return;
+      }
+
+      room.table.autoDealEnabled = Boolean(parsed.enabled);
+
+      const delayMs = Number(parsed.delayMs);
+      if (Number.isInteger(delayMs) && delayMs >= 500 && delayMs <= 10000) {
+        room.table.autoDealDelayMs = delayMs;
+      }
+
+      if (room.table.autoDealEnabled) {
+        maybeScheduleAutoStart(room);
+      } else {
+        clearAutoStartTimer(room);
+      }
+
+      sendJson(socket, {
+        type: "auto_deal_updated",
+        roomId: session.roomId,
+        enabled: room.table.autoDealEnabled,
+        delayMs: room.table.autoDealDelayMs,
+      });
+      publishRoomState(session.roomId);
       return;
     }
 
@@ -681,6 +1224,7 @@ app.get("/ws", { websocket: true }, (socket) => {
       }
 
       const toCall = getPlayerToCallAmount(room, currentPlayer);
+      const pendingSeatNumbersBeforeAction = new Set(room.hand.pendingSeatNumbers);
       let amountCommitted = 0;
       let note = null;
 
@@ -702,19 +1246,20 @@ app.get("/ws", { websocket: true }, (socket) => {
           return;
         }
 
-        if (currentPlayer.stack < toCall) {
-          sendJson(socket, {
-            type: "error",
-            message: "insufficient stack; all-in not implemented yet",
-          });
+        const callAmount = Math.min(toCall, currentPlayer.stack);
+        if (callAmount <= 0) {
+          sendJson(socket, { type: "error", message: "insufficient stack for call" });
           return;
         }
 
-        currentPlayer.stack -= toCall;
-        currentPlayer.committedThisStreet += toCall;
-        currentPlayer.committedThisHand += toCall;
-        room.hand.pot += toCall;
-        amountCommitted = toCall;
+        currentPlayer.stack -= callAmount;
+        currentPlayer.committedThisStreet += callAmount;
+        currentPlayer.committedThisHand += callAmount;
+        room.hand.pot += callAmount;
+        amountCommitted = callAmount;
+        if (callAmount < toCall) {
+          note = "all_in_call";
+        }
         room.hand.pendingSeatNumbers.delete(currentPlayer.seatNumber);
       } else if (actionType === "bet") {
         if (room.hand.currentBet > 0) {
@@ -726,16 +1271,9 @@ app.get("/ws", { websocket: true }, (socket) => {
         }
 
         const amount = Number(parsed.amount);
-        if (!Number.isInteger(amount) || amount <= 0) {
-          sendJson(socket, {
-            type: "error",
-            message: "bet requires a positive integer amount",
-          });
-          return;
-        }
-
-        if (amount > currentPlayer.stack) {
-          sendJson(socket, { type: "error", message: "insufficient stack for bet" });
+        const betValidationError = validateBetAmount(amount, currentPlayer.stack);
+        if (betValidationError) {
+          sendJson(socket, { type: "error", message: betValidationError });
           return;
         }
 
@@ -746,16 +1284,24 @@ app.get("/ws", { websocket: true }, (socket) => {
 
         room.hand.currentBet = currentPlayer.committedThisStreet;
         room.hand.minRaiseTo = room.hand.currentBet * 2;
+        room.hand.raiseClosedSeatNumbers.clear();
         amountCommitted = amount;
         note = `currentBet=${room.hand.currentBet}`;
 
-        const activeSeatNumbers = getActiveSeatNumbers(room);
-        room.hand.pendingSeatNumbers = new Set(
-          activeSeatNumbers.filter(
-            (seatNumber) => seatNumber !== currentPlayer.seatNumber,
-          ),
+        const activeSeatNumbers = getActionEligibleSeatNumbers(room);
+        room.hand.pendingSeatNumbers = buildPendingSeatsAfterAggressiveAction(
+          activeSeatNumbers,
+          currentPlayer.seatNumber,
         );
       } else if (actionType === "raise_to") {
+        if (room.hand.raiseClosedSeatNumbers.has(currentPlayer.seatNumber)) {
+          sendJson(socket, {
+            type: "error",
+            message: "raising is not reopened for your seat; call or fold",
+          });
+          return;
+        }
+
         if (room.hand.currentBet <= 0) {
           sendJson(socket, {
             type: "error",
@@ -765,38 +1311,24 @@ app.get("/ws", { websocket: true }, (socket) => {
         }
 
         const targetAmount = Number(parsed.amount);
-        if (!Number.isInteger(targetAmount) || targetAmount <= room.hand.currentBet) {
+        const raiseValidationError = validateRaiseTarget({
+          targetAmount,
+          currentBet: room.hand.currentBet,
+          currentCommittedThisStreet: currentPlayer.committedThisStreet,
+          currentStack: currentPlayer.stack,
+          minRaiseTo: room.hand.minRaiseTo,
+        });
+        if (raiseValidationError) {
           sendJson(socket, {
             type: "error",
-            message: `raise_to must be an integer greater than ${room.hand.currentBet}`,
-          });
-          return;
-        }
-
-        if (room.hand.minRaiseTo !== null && targetAmount < room.hand.minRaiseTo) {
-          sendJson(socket, {
-            type: "error",
-            message: `raise_to must be at least ${room.hand.minRaiseTo}`,
+            message: raiseValidationError,
           });
           return;
         }
 
         const amountToCommit = targetAmount - currentPlayer.committedThisStreet;
-        if (amountToCommit <= 0) {
-          sendJson(socket, {
-            type: "error",
-            message: "raise_to amount must exceed your current committed amount",
-          });
-          return;
-        }
-
-        if (amountToCommit > currentPlayer.stack) {
-          sendJson(socket, {
-            type: "error",
-            message: "insufficient stack for raise",
-          });
-          return;
-        }
+        const isAllInTarget = targetAmount === currentPlayer.committedThisStreet + currentPlayer.stack;
+        const reopensAction = doesRaiseReopenAction(room.hand.minRaiseTo, targetAmount);
 
         const previousCurrentBet = room.hand.currentBet;
 
@@ -808,16 +1340,31 @@ app.get("/ws", { websocket: true }, (socket) => {
         room.hand.currentBet = currentPlayer.committedThisStreet;
 
         const raiseIncrement = room.hand.currentBet - previousCurrentBet;
-        room.hand.minRaiseTo = room.hand.currentBet + raiseIncrement;
+        if (raiseIncrement > 0 && reopensAction) {
+          room.hand.minRaiseTo = room.hand.currentBet + raiseIncrement;
+        }
         amountCommitted = amountToCommit;
-        note = `currentBet=${room.hand.currentBet}`;
+        note = isAllInTarget
+          ? reopensAction
+            ? "all_in_raise"
+            : "all_in_raise_no_reopen"
+          : `currentBet=${room.hand.currentBet}`;
 
-        const activeSeatNumbers = getActiveSeatNumbers(room);
-        room.hand.pendingSeatNumbers = new Set(
-          activeSeatNumbers.filter(
-            (seatNumber) => seatNumber !== currentPlayer.seatNumber,
-          ),
+        const activeSeatNumbers = getActionEligibleSeatNumbers(room);
+        room.hand.pendingSeatNumbers = buildPendingSeatsAfterAggressiveAction(
+          activeSeatNumbers,
+          currentPlayer.seatNumber,
         );
+
+        if (reopensAction) {
+          room.hand.raiseClosedSeatNumbers.clear();
+        } else {
+          room.hand.raiseClosedSeatNumbers = buildRaiseClosedSeatNumbers(
+            activeSeatNumbers,
+            currentPlayer.seatNumber,
+            pendingSeatNumbersBeforeAction,
+          );
+        }
       } else if (actionType === "fold") {
         room.hand.foldedSeatNumbers.add(currentPlayer.seatNumber);
         room.hand.pendingSeatNumbers.delete(currentPlayer.seatNumber);
@@ -838,6 +1385,10 @@ app.get("/ws", { websocket: true }, (socket) => {
           type: "round_ended",
           roomId: session.roomId,
           winnerSeatNumber: foldEndResult.winnerSeatNumber,
+          winnerSeatNumbers: foldEndResult.winnerSeatNumbers,
+          payouts: foldEndResult.payouts,
+          potBreakdown: foldEndResult.potBreakdown,
+          showdown: foldEndResult.showdown,
           reason: foldEndResult.reason,
         });
 
@@ -846,38 +1397,31 @@ app.get("/ws", { websocket: true }, (socket) => {
       }
 
       if (room.hand.pendingSeatNumbers.size === 0) {
-        if (room.hand.street === "river") {
-          const completeResult = endRound(room, "showdown_pending", null);
+        const progression = progressRoundWhenNoPending(room);
+        for (const transition of progression.streetEvents) {
+          sendJson(socket, {
+            type: "street_advanced",
+            roomId: session.roomId,
+            street: transition.street,
+            boardCards: transition.boardCards,
+            turnSeatNumber: transition.turnSeatNumber,
+          });
+        }
+
+        if (progression.ended) {
           sendJson(socket, {
             type: "round_ended",
             roomId: session.roomId,
-            winnerSeatNumber: completeResult.winnerSeatNumber,
-            reason: completeResult.reason,
+            winnerSeatNumber: progression.endResult.winnerSeatNumber,
+            winnerSeatNumbers: progression.endResult.winnerSeatNumbers,
+            payouts: progression.endResult.payouts,
+            potBreakdown: progression.endResult.potBreakdown,
+            showdown: progression.endResult.showdown,
+            reason: progression.endResult.reason,
           });
           publishRoomState(session.roomId);
           return;
         }
-
-        const transition = advanceStreet(room);
-        if (!transition) {
-          const fallbackResult = endRound(room, "street_advance_failed", null);
-          sendJson(socket, {
-            type: "round_ended",
-            roomId: session.roomId,
-            winnerSeatNumber: fallbackResult.winnerSeatNumber,
-            reason: fallbackResult.reason,
-          });
-          publishRoomState(session.roomId);
-          return;
-        }
-
-        sendJson(socket, {
-          type: "street_advanced",
-          roomId: session.roomId,
-          street: transition.street,
-          boardCards: transition.boardCards,
-          turnSeatNumber: transition.turnSeatNumber,
-        });
 
         publishRoomState(session.roomId);
         return;

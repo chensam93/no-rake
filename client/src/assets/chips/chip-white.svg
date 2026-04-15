@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="base" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="70%" stop-color="#e2e8f0"/>
+      <stop offset="100%" stop-color="#94a3b8"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="#1f2937"/>
+  <circle cx="32" cy="32" r="27" fill="url(#base)"/>
+  <circle cx="32" cy="32" r="21" fill="#f8fafc"/>
+  <circle cx="32" cy="32" r="9.5" fill="#1f2937"/>
+  <g fill="#475569">
+    <rect x="30" y="5.5" width="4" height="8" rx="1"/>
+    <rect x="30" y="50.5" width="4" height="8" rx="1"/>
+    <rect x="50.5" y="30" width="8" height="4" rx="1"/>
+    <rect x="5.5" y="30" width="8" height="4" rx="1"/>
+    <rect x="44.5" y="11.5" width="4" height="8" rx="1" transform="rotate(40 46.5 15.5)"/>
+    <rect x="16" y="44.5" width="4" height="8" rx="1" transform="rotate(40 18 48.5)"/>
+    <rect x="44.5" y="44.5" width="4" height="8" rx="1" transform="rotate(-40 46.5 48.5)"/>
+    <rect x="16" y="11.5" width="4" height="8" rx="1" transform="rotate(-40 18 15.5)"/>
+  </g>
+  <circle cx="24" cy="22" r="8" fill="#ffffff" opacity="0.38"/>
+</svg>

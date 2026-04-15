@@ -45,8 +45,10 @@ Set websocket URL by copying `client/.env.example` to `client/.env.development` 
 - `join_room`
 - `sit_down`
 - `start_round`
+- `set_auto_deal`
 - `player_action` (`check`, `call`, `fold`, `bet`, `raise_to`)
-- room broadcast: `room_state` with player seats/stacks and round metadata (`street`, `board`, `pot`, blind seats, `pendingSeatNumbers`, `currentBet`, `minRaiseTo`)
+- room broadcast: `room_state` with player seats/stacks and round metadata (`street`, `board`, `pot`, blind seats, `pendingSeatNumbers`, `currentBet`, `minRaiseTo`, showdown/payout metadata after hand end)
+- hand lifecycle events: `street_advanced`, `round_ended`
 
 Current betting-round behavior:
 - round auto-ends with reason `betting_complete` when all active seats have responded to the latest bet/raise
@@ -56,7 +58,19 @@ Current hand/street behavior:
 - `start_round` posts blinds automatically from table config
 - round starts on `preflop`
 - when betting settles before river, server auto-advances streets (`flop` -> `turn` -> `river`) and updates `board`
-- after river betting settles, round ends with `showdown_pending` (winner evaluation not implemented yet)
+- after river betting settles, round resolves at showdown with payout metadata
+- side-pot distribution for uneven all-ins is implemented
+
+## Rules and smoke checks
+
+- deterministic rules harness: `npm run simulate:round -w server`
+- two-player smoke hand: `npm run smoke:two-player -w server`
+- combined server rules checks: `npm run test:rules -w server`
+- client bot-decision logic check: `npm run test:bot-decision -w client`
+
+## Deploy and operations
+
+- deployment checklist and troubleshooting runbook: `docs/deploy_runbook.md`
 
 ## Development model
 
@@ -71,7 +85,7 @@ Implementation (source, tests, CI, most docs) is **LLM-generated under maintaine
 
 Revise this section if the split changes materially.
 
-**Snapshot (2026-04-15):** Browser client exists (`client/`) and can run through a full preflop/flop/turn/river skeleton with blinds, basic betting, and street auto-advance. Showdown winner logic is not implemented yet.
+**Snapshot (2026-04-15):** Browser client exists (`client/`) and supports full-hand progression with showdown evaluation, uneven-stack side pots, host auto-deal controls, and deterministic rules smoke checks.
 
 ## License
 
