@@ -45,6 +45,23 @@ On success:
 - everyone in that room gets `room_state` with current player list
 - disconnect removes the player and republishes `room_state`
 
+### Seat assignment (step 6)
+
+After joining, client can send:
+
+```json
+{ "type": "sit_down", "seatNumber": 3 }
+```
+
+Rules right now:
+- valid seats are integers `1..9`
+- seat must be free in that room
+- client must `join_room` first
+
+On success:
+- client gets `sat_down`
+- room gets updated `room_state` with `playerName` + `seatNumber`
+
 ## Development model
 
 Implementation (source, tests, CI, most docs) is **LLM-generated under maintainer direction** (Cursor and similar). The maintainer sets product behavior, accepts or rejects changes, runs deploys, and holds secrets. **Third parties should review before relying on this codebase.**
@@ -58,7 +75,7 @@ Implementation (source, tests, CI, most docs) is **LLM-generated under maintaine
 
 Revise this section if the split changes materially.
 
-**Snapshot (2026-04-05):** `server/` — Fastify, `GET /health`, `GET /` smoke page, **`GET /ws`** WebSocket with `join_room` and room_state broadcast (in memory). Tooling: Cursor. Code review: minimal.
+**Snapshot (2026-04-05):** `server/` — Fastify, `GET /health`, `GET /` smoke page, **`GET /ws`** with `join_room`, `sit_down`, and room_state broadcast (in memory). Tooling: Cursor. Code review: minimal.
 
 ## License
 

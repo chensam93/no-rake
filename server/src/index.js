@@ -4,6 +4,7 @@ import Fastify from "fastify";
 const app = Fastify({ logger: true });
 const PORT = Number(process.env.PORT) || 3000;
 const OPEN = 1;
+const MAX_SEATS = 9;
 
 const rooms = new Map();
 
@@ -38,7 +39,12 @@ function publishRoomState(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
 
-  const players = [...room.playersBySocket.values()];
+  const players = [...room.playersBySocket.values()].sort((left, right) => {
+    if (left.seatNumber === null && right.seatNumber === null) return 0;
+    if (left.seatNumber === null) return 1;
+    if (right.seatNumber === null) return -1;
+    return left.seatNumber - right.seatNumber;
+  });
   const payload = {
     type: "room_state",
     roomId,
@@ -70,13 +76,15 @@ app.get("/", async () => `<!doctype html>
   </head>
   <body>
     <h1>No Rake</h1>
-    <p>Step 5 browser smoke test for WebSockets + in-memory room join.</p>
+    <p>Step 6 browser smoke test for room join + seat assignment.</p>
     <p>Socket URL: <code>ws://127.0.0.1:${PORT}/ws</code></p>
     <div>
       <label>Room <input id="room" value="home" /></label>
       <label>Name <input id="name" value="player" /></label>
+      <label>Seat <input id="seat" value="1" type="number" min="1" max="9" /></label>
     </div>
     <button id="join">Join room</button>
+    <button id="sit">Sit down</button>
     <button id="send">Send ping</button>
     <pre id="log">waiting...</pre>
     <script>
@@ -95,6 +103,11 @@ app.get("/", async () => `<!doctype html>
         ws.send(JSON.stringify({ type: "join_room", roomId, playerName }));
         line("[out] join_room");
       };
+      document.getElementById("sit").onclick = () => {
+        const seatNumber = Number(document.getElementById("seat").value);
+        ws.send(JSON.stringify({ type: "sit_down", seatNumber }));
+        line("[out] sit_down");
+      };
       document.getElementById("send").onclick = () => {
         ws.send("ping-" + Date.now());
         line("[out] ping");
@@ -112,7 +125,7 @@ app.get("/ws", { websocket: true }, (socket) => {
   sendJson(socket, {
     type: "hello",
     message: "no-rake",
-    supportedMessages: ["join_room", "ping-*"],
+    supportedMessages: ["join_room", "sit_down", "ping-*"],
   });
 
   socket.on("message", (raw) => {
@@ -153,7 +166,10 @@ app.get("/ws", { websocket: true }, (socket) => {
 
       const room = getOrCreateRoom(roomId);
       room.members.add(socket);
-      room.playersBySocket.set(socket, playerName);
+      room.playersBySocket.set(socket, {
+        playerName,
+        seatNumber: null,
+      });
 
       sendJson(socket, {
         type: "joined_room",
@@ -162,6 +178,55 @@ app.get("/ws", { websocket: true }, (socket) => {
       });
 
       publishRoomState(roomId);
+      return;
+    }
+
+    if (parsed.type === "sit_down") {
+      if (!session.roomId || !session.playerName) {
+        sendJson(socket, {
+          type: "error",
+          message: "join_room before sit_down",
+        });
+        return;
+      }
+
+      const seatNumber = Number(parsed.seatNumber);
+      if (!Number.isInteger(seatNumber) || seatNumber < 1 || seatNumber > MAX_SEATS) {
+        sendJson(socket, {
+          type: "error",
+          message: `seatNumber must be an integer between 1 and ${MAX_SEATS}`,
+        });
+        return;
+      }
+
+      const room = rooms.get(session.roomId);
+      if (!room) {
+        sendJson(socket, { type: "error", message: "room not found" });
+        return;
+      }
+
+      for (const [memberSocket, player] of room.playersBySocket.entries()) {
+        if (memberSocket !== socket && player.seatNumber === seatNumber) {
+          sendJson(socket, { type: "error", message: "seat already taken" });
+          return;
+        }
+      }
+
+      const currentPlayer = room.playersBySocket.get(socket);
+      if (!currentPlayer) {
+        sendJson(socket, { type: "error", message: "player not found in room" });
+        return;
+      }
+
+      currentPlayer.seatNumber = seatNumber;
+      sendJson(socket, {
+        type: "sat_down",
+        roomId: session.roomId,
+        playerName: currentPlayer.playerName,
+        seatNumber,
+      });
+
+      publishRoomState(session.roomId);
       return;
     }
 
