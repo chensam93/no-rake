@@ -46,7 +46,11 @@ Set websocket URL by copying `client/.env.example` to `client/.env.development` 
 - `sit_down`
 - `start_round`
 - `player_action` (`check`, `call`, `fold`, `bet`, `raise_to`)
-- room broadcast: `room_state` with player seats, stacks, committed chips, and round metadata (`currentBet`, `minRaiseTo`)
+- room broadcast: `room_state` with player seats, stacks, committed chips, and round metadata (`pendingSeatNumbers`, `currentBet`, `minRaiseTo`)
+
+Current betting-round behavior:
+- round auto-ends with reason `betting_complete` when all active seats have responded to the latest bet/raise
+- round auto-ends with reason `fold_winner` when one active seat remains
 
 ## Development model
 

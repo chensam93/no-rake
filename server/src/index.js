@@ -23,9 +23,11 @@ function getOrCreateRoom(roomId) {
         inProgress: false,
         turnSeatNumber: null,
         foldedSeatNumbers: new Set(),
+        pendingSeatNumbers: new Set(),
         actionLog: [],
         currentBet: 0,
         minRaiseTo: null,
+        lastEndReason: null,
       },
     });
   }
@@ -52,28 +54,73 @@ function getActiveSeatNumbers(room) {
     .filter((seatNumber) => !room.hand.foldedSeatNumbers.has(seatNumber));
 }
 
-function getNextTurnSeatNumber(room, currentSeatNumber) {
+function getNextPendingTurnSeatNumber(room, currentSeatNumber) {
   const activeSeatNumbers = getActiveSeatNumbers(room);
   if (activeSeatNumbers.length === 0) return null;
 
+  const pendingSeatNumbers = room.hand.pendingSeatNumbers;
+  const seatsNeedingAction = activeSeatNumbers.filter((seatNumber) =>
+    pendingSeatNumbers.has(seatNumber),
+  );
+
+  if (seatsNeedingAction.length === 0) return null;
+
   const currentIndex = activeSeatNumbers.indexOf(currentSeatNumber);
   if (currentIndex === -1) {
-    return activeSeatNumbers[0];
+    return seatsNeedingAction[0];
   }
 
-  const nextIndex = (currentIndex + 1) % activeSeatNumbers.length;
-  return activeSeatNumbers[nextIndex];
+  for (let step = 1; step <= activeSeatNumbers.length; step += 1) {
+    const index = (currentIndex + step) % activeSeatNumbers.length;
+    const seatNumber = activeSeatNumbers[index];
+    if (pendingSeatNumbers.has(seatNumber)) {
+      return seatNumber;
+    }
+  }
+
+  return seatsNeedingAction[0];
+}
+
+function endRound(room, reason, winnerSeatNumber = null) {
+  room.hand.inProgress = false;
+  room.hand.turnSeatNumber = null;
+  room.hand.currentBet = 0;
+  room.hand.minRaiseTo = null;
+  room.hand.pendingSeatNumbers.clear();
+  room.hand.lastEndReason = reason;
+
+  return { reason, winnerSeatNumber };
 }
 
 function maybeResolveHandAfterMembershipChange(room) {
   if (!room.hand.inProgress) return;
 
   const activeSeatNumbers = getActiveSeatNumbers(room);
+  for (const pendingSeatNumber of [...room.hand.pendingSeatNumbers]) {
+    if (!activeSeatNumbers.includes(pendingSeatNumber)) {
+      room.hand.pendingSeatNumbers.delete(pendingSeatNumber);
+    }
+  }
+
   if (activeSeatNumbers.length <= 1) {
-    room.hand.inProgress = false;
-    room.hand.turnSeatNumber = null;
-  } else if (!activeSeatNumbers.includes(room.hand.turnSeatNumber)) {
-    room.hand.turnSeatNumber = activeSeatNumbers[0];
+    endRound(room, "fold_winner", activeSeatNumbers[0] ?? null);
+    return;
+  }
+
+  if (room.hand.pendingSeatNumbers.size === 0) {
+    endRound(room, "betting_complete", null);
+    return;
+  }
+
+  if (
+    room.hand.turnSeatNumber === null ||
+    !activeSeatNumbers.includes(room.hand.turnSeatNumber) ||
+    !room.hand.pendingSeatNumbers.has(room.hand.turnSeatNumber)
+  ) {
+    room.hand.turnSeatNumber = getNextPendingTurnSeatNumber(
+      room,
+      room.hand.turnSeatNumber ?? activeSeatNumbers[0],
+    );
   }
 }
 
@@ -102,8 +149,10 @@ function publishRoomState(roomId) {
       inProgress: room.hand.inProgress,
       turnSeatNumber: room.hand.turnSeatNumber,
       foldedSeatNumbers: [...room.hand.foldedSeatNumbers].sort((left, right) => left - right),
+      pendingSeatNumbers: [...room.hand.pendingSeatNumbers].sort((left, right) => left - right),
       currentBet: room.hand.currentBet,
       minRaiseTo: room.hand.minRaiseTo,
+      lastEndReason: room.hand.lastEndReason,
       actionLog: room.hand.actionLog,
     },
   };
@@ -123,10 +172,12 @@ function startRound(room) {
 
   room.hand.inProgress = true;
   room.hand.foldedSeatNumbers.clear();
+  room.hand.pendingSeatNumbers = new Set(seatedPlayers.map((player) => player.seatNumber));
   room.hand.actionLog = [];
   room.hand.turnSeatNumber = seatedPlayers[0].seatNumber;
   room.hand.currentBet = 0;
   room.hand.minRaiseTo = null;
+  room.hand.lastEndReason = null;
 
   for (const player of room.playersBySocket.values()) {
     player.committedThisRound = 0;
@@ -145,14 +196,7 @@ function getPlayerToCallAmount(room, player) {
 function maybeEndRoundOnFold(room) {
   const activeSeatNumbers = getActiveSeatNumbers(room);
   if (activeSeatNumbers.length > 1) return null;
-
-  const winnerSeatNumber = activeSeatNumbers[0] ?? null;
-  room.hand.inProgress = false;
-  room.hand.turnSeatNumber = null;
-  room.hand.currentBet = 0;
-  room.hand.minRaiseTo = null;
-
-  return winnerSeatNumber;
+  return endRound(room, "fold_winner", activeSeatNumbers[0] ?? null);
 }
 
 function renderSmokePage() {
@@ -474,6 +518,7 @@ app.get("/ws", { websocket: true }, (socket) => {
           });
           return;
         }
+        room.hand.pendingSeatNumbers.delete(currentPlayer.seatNumber);
       } else if (actionType === "call") {
         if (toCall <= 0) {
           sendJson(socket, {
@@ -494,6 +539,7 @@ app.get("/ws", { websocket: true }, (socket) => {
         currentPlayer.stack -= toCall;
         currentPlayer.committedThisRound += toCall;
         amountCommitted = toCall;
+        room.hand.pendingSeatNumbers.delete(currentPlayer.seatNumber);
       } else if (actionType === "bet") {
         if (room.hand.currentBet > 0) {
           sendJson(socket, {
@@ -523,6 +569,13 @@ app.get("/ws", { websocket: true }, (socket) => {
         room.hand.minRaiseTo = room.hand.currentBet * 2;
         amountCommitted = amount;
         note = `currentBet=${room.hand.currentBet}`;
+
+        const activeSeatNumbers = getActiveSeatNumbers(room);
+        room.hand.pendingSeatNumbers = new Set(
+          activeSeatNumbers.filter(
+            (seatNumber) => seatNumber !== currentPlayer.seatNumber,
+          ),
+        );
       } else if (actionType === "raise_to") {
         if (room.hand.currentBet <= 0) {
           sendJson(socket, {
@@ -576,8 +629,16 @@ app.get("/ws", { websocket: true }, (socket) => {
         room.hand.minRaiseTo = room.hand.currentBet + raiseIncrement;
         amountCommitted = amountToCommit;
         note = `currentBet=${room.hand.currentBet}`;
+
+        const activeSeatNumbers = getActiveSeatNumbers(room);
+        room.hand.pendingSeatNumbers = new Set(
+          activeSeatNumbers.filter(
+            (seatNumber) => seatNumber !== currentPlayer.seatNumber,
+          ),
+        );
       } else if (actionType === "fold") {
         room.hand.foldedSeatNumbers.add(currentPlayer.seatNumber);
+        room.hand.pendingSeatNumbers.delete(currentPlayer.seatNumber);
       }
 
       room.hand.actionLog.push({
@@ -588,19 +649,32 @@ app.get("/ws", { websocket: true }, (socket) => {
         toCallBeforeAction: toCall,
       });
 
-      const winnerSeatNumber = maybeEndRoundOnFold(room);
-      if (winnerSeatNumber !== null) {
+      const foldEndResult = maybeEndRoundOnFold(room);
+      if (foldEndResult !== null) {
         sendJson(socket, {
           type: "round_ended",
           roomId: session.roomId,
-          winnerSeatNumber,
+          winnerSeatNumber: foldEndResult.winnerSeatNumber,
+          reason: foldEndResult.reason,
         });
 
         publishRoomState(session.roomId);
         return;
       }
 
-      room.hand.turnSeatNumber = getNextTurnSeatNumber(
+      if (room.hand.pendingSeatNumbers.size === 0) {
+        const completeResult = endRound(room, "betting_complete", null);
+        sendJson(socket, {
+          type: "round_ended",
+          roomId: session.roomId,
+          winnerSeatNumber: completeResult.winnerSeatNumber,
+          reason: completeResult.reason,
+        });
+        publishRoomState(session.roomId);
+        return;
+      }
+
+      room.hand.turnSeatNumber = getNextPendingTurnSeatNumber(
         room,
         currentPlayer.seatNumber,
       );

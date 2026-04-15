@@ -235,8 +235,10 @@ function App() {
             <ul>
               <li>inProgress: {String(roomState.round.inProgress)}</li>
               <li>turnSeatNumber: {String(roomState.round.turnSeatNumber)}</li>
+              <li>pendingSeatNumbers: {roomState.round.pendingSeatNumbers.join(", ") || "none"}</li>
               <li>currentBet: {roomState.round.currentBet}</li>
               <li>minRaiseTo: {String(roomState.round.minRaiseTo)}</li>
+              <li>lastEndReason: {String(roomState.round.lastEndReason)}</li>
               <li>folded: {roomState.round.foldedSeatNumbers.join(", ") || "none"}</li>
             </ul>
           ) : (

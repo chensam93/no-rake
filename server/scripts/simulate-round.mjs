@@ -43,10 +43,6 @@ setTimeout(() => {
 }, 620);
 
 setTimeout(() => {
-  bob.send(JSON.stringify({ type: "player_action", actionType: "fold" }));
-}, 760);
-
-setTimeout(() => {
   alice.close();
   bob.close();
-}, 1100);
+}, 950);
