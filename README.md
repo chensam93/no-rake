@@ -62,6 +62,40 @@ On success:
 - client gets `sat_down`
 - room gets updated `room_state` with `playerName` + `seatNumber`
 
+### Simple round flow (step 7)
+
+New messages:
+
+```json
+{ "type": "start_round" }
+```
+
+```json
+{ "type": "player_action", "actionType": "check" }
+```
+
+Current server rules:
+- `start_round` requires at least 2 seated players
+- turn starts at the lowest occupied seat
+- only current turn seat can send `player_action`
+- supported actions are `fold`, `check`, `call`
+- on `fold`, player is removed from active-turn rotation
+- if one active player remains, server ends round (`round_ended`)
+
+State broadcast:
+- `room_state` now includes a `round` object:
+  - `inProgress`
+  - `turnSeatNumber`
+  - `foldedSeatNumbers`
+  - `actionLog`
+
+Quick simulation:
+
+```bash
+cd server
+npm run simulate:round
+```
+
 ## Development model
 
 Implementation (source, tests, CI, most docs) is **LLM-generated under maintainer direction** (Cursor and similar). The maintainer sets product behavior, accepts or rejects changes, runs deploys, and holds secrets. **Third parties should review before relying on this codebase.**
@@ -75,7 +109,7 @@ Implementation (source, tests, CI, most docs) is **LLM-generated under maintaine
 
 Revise this section if the split changes materially.
 
-**Snapshot (2026-04-05):** `server/` — Fastify, `GET /health`, `GET /` smoke page, **`GET /ws`** with `join_room`, `sit_down`, and room_state broadcast (in memory). Tooling: Cursor. Code review: minimal.
+**Snapshot (2026-04-05):** `server/` — Fastify, `GET /health`, `GET /` smoke page, **`GET /ws`** with room join, seating, round start, turn validation, and action log (in memory). Tooling: Cursor. Code review: minimal.
 
 ## License
 
