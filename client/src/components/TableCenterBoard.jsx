@@ -7,6 +7,22 @@ export default function TableCenterBoard({
 }) {
   return (
     <div className="table-center">
+      <div className="card-row board-row">
+        {boardSlots.map((card, index) =>
+          card ? (
+            <span
+              key={`${card}-${index}`}
+              className={`poker-card board-card ${cardSuitClass(card)}`}
+            >
+              {cardLabel(card)}
+            </span>
+          ) : (
+            <span key={`empty-${index}`} className="poker-card board-card poker-card-back">
+              --
+            </span>
+          ),
+        )}
+      </div>
       <div className="table-center-head">
         <div className="pot-pill">Pot: {potValue}</div>
         {potChipCount > 0 ? (
@@ -23,22 +39,6 @@ export default function TableCenterBoard({
             ))}
           </div>
         ) : null}
-      </div>
-      <div className="card-row board-row">
-        {boardSlots.map((card, index) =>
-          card ? (
-            <span
-              key={`${card}-${index}`}
-              className={`poker-card board-card ${cardSuitClass(card)}`}
-            >
-              {cardLabel(card)}
-            </span>
-          ) : (
-            <span key={`empty-${index}`} className="poker-card board-card poker-card-back">
-              --
-            </span>
-          ),
-        )}
       </div>
     </div>
   );

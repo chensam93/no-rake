@@ -1,52 +1,51 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import "./App.css";
 import HandStatusPanel from "./components/HandStatusPanel.jsx";
-import PotClarityPanel from "./components/PotClarityPanel.jsx";
 import HandContextPanel from "./components/HandContextPanel.jsx";
 import ActionControlsPanel from "./components/ActionControlsPanel.jsx";
 import TableCenterBoard from "./components/TableCenterBoard.jsx";
 import SeatNodesLayer from "./components/SeatNodesLayer.jsx";
-import { buildPotBreakdownPreview } from "./lib/handStateSelectors.js";
 import { useSocketSenders } from "./hooks/useSocketSenders.js";
 import { computeBotDecision } from "./lib/botDecision.js";
+import { getRecommendedPreflopRaiseTo } from "./lib/preflopSizing.js";
 
 const DEFAULT_WS_URL = "ws://127.0.0.1:3000/ws";
 const WS_URL = import.meta.env.VITE_WS_URL || DEFAULT_WS_URL;
 const DEFAULT_QUICK_MODE = true;
 const DEFAULT_BET_PRESET_TEXT = "33,50,66,100";
-const SEAT_LAYOUT = {
-  1: { top: "90%", left: "50%" },
-  2: { top: "83%", left: "72%" },
-  3: { top: "66%", left: "89%" },
-  4: { top: "39%", left: "90%" },
-  5: { top: "18%", left: "71%" },
-  6: { top: "9%", left: "50%" },
-  7: { top: "18%", left: "29%" },
-  8: { top: "39%", left: "10%" },
-  9: { top: "66%", left: "11%" },
-};
-const BET_MARKER_LAYOUT = {
-  1: { top: "71%", left: "50%" },
-  2: { top: "64%", left: "61%" },
-  3: { top: "55%", left: "71%" },
-  4: { top: "45%", left: "72%" },
-  5: { top: "33%", left: "61%" },
-  6: { top: "26%", left: "50%" },
-  7: { top: "33%", left: "39%" },
-  8: { top: "45%", left: "28%" },
-  9: { top: "55%", left: "29%" },
-};
+const PREFLOP_OPEN_BB_KEY = "no-rake-preflop-open-bb-mult";
 
-function getBetMarkerPosition(seatNumber) {
-  const markerLayout = BET_MARKER_LAYOUT[seatNumber];
-  if (markerLayout) {
-    return { top: markerLayout.top, left: markerLayout.left };
+function readStoredPreflopOpenBbMultiple() {
+  try {
+    if (typeof localStorage === "undefined") return 2.5;
+    const raw = localStorage.getItem(PREFLOP_OPEN_BB_KEY);
+    if (raw === null) return 2.5;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return 2.5;
+    return Math.min(6, Math.max(1.5, Math.round(parsed * 20) / 20));
+  } catch {
+    return 2.5;
   }
+}
+/* Percent positions on felt; edge seats nudged inward so spacing to oval rim is more even */
+const SEAT_LAYOUT = {
+  1: { top: "88%", left: "50%" },
+  2: { top: "82%", left: "69%" },
+  3: { top: "65%", left: "85%" },
+  4: { top: "38%", left: "86%" },
+  5: { top: "18%", left: "68%" },
+  6: { top: "11%", left: "50%" },
+  7: { top: "18%", left: "32%" },
+  8: { top: "38%", left: "14%" },
+  9: { top: "65%", left: "15%" },
+};
+function getBetMarkerPosition(seatNumber) {
   const seatLayout = SEAT_LAYOUT[seatNumber];
   if (!seatLayout) return { top: "50%", left: "50%" };
   const seatTop = Number.parseFloat(seatLayout.top);
   const seatLeft = Number.parseFloat(seatLayout.left);
-  const towardCenter = 0.4;
+  // Keep committed bet markers in front of each player (closer to hole cards than board center).
+  const towardCenter = 0.28;
   const top = seatTop + (50 - seatTop) * towardCenter;
   const left = seatLeft + (50 - seatLeft) * towardCenter;
   return { top: `${top}%`, left: `${left}%` };
@@ -120,11 +119,68 @@ function formatActionSummary(action) {
   return `${actor} ${actionType}`;
 }
 
+/** Heuristic labels for server `{ type: "error" }` messages (no server contract change). */
+function classifyServerErrorMessage(message) {
+  const text = String(message || "").toLowerCase();
+  if (text.includes("invalid json") || text.includes("unsupported message")) {
+    return "system";
+  }
+  if (
+    text.includes("join_room before") ||
+    text.includes("room not found") ||
+    text.includes("only host") ||
+    text.includes("player not found") ||
+    text.includes("manual step mode") ||
+    text.includes("step progression")
+  ) {
+    return "session";
+  }
+  return "action";
+}
+
+function serverErrorCategoryLabel(category) {
+  if (category === "session") return "Room / session";
+  if (category === "system") return "Server or protocol";
+  return "Action";
+}
+
+const RAISE_SLIDER_EXPONENT = 2.2;
+
+function getRaiseAmountFromSliderPosition(position, minTarget, maxTarget, step) {
+  const safeMin = Number(minTarget);
+  const safeMax = Number(maxTarget);
+  if (!Number.isFinite(safeMin) || !Number.isFinite(safeMax) || safeMax <= safeMin) {
+    return Math.round(safeMin || safeMax || 0);
+  }
+  const safeStep = Math.max(1, Math.round(Number(step) || 1));
+  const normalized = Math.max(0, Math.min(1, Number(position) / 100));
+  const biased = normalized ** RAISE_SLIDER_EXPONENT;
+  const rawAmount = safeMin + biased * (safeMax - safeMin);
+  const snapped = safeMin + Math.round((rawAmount - safeMin) / safeStep) * safeStep;
+  return Math.max(safeMin, Math.min(safeMax, Math.round(snapped)));
+}
+
+function getRaiseSliderPositionFromAmount(amount, minTarget, maxTarget) {
+  const safeMin = Number(minTarget);
+  const safeMax = Number(maxTarget);
+  if (!Number.isFinite(safeMin) || !Number.isFinite(safeMax) || safeMax <= safeMin) {
+    return 0;
+  }
+  const safeAmount = Math.max(safeMin, Math.min(safeMax, Number(amount) || safeMin));
+  const normalized = (safeAmount - safeMin) / (safeMax - safeMin);
+  const slider = normalized ** (1 / RAISE_SLIDER_EXPONENT);
+  return Math.round(slider * 100);
+}
+
 function App() {
   const wsRef = useRef(null);
   const botWsRef = useRef(null);
   const botLastActionKeyRef = useRef(null);
   const botSeatRef = useRef(null);
+  const botAutoActionTimeoutRef = useRef(null);
+  const botPendingActionKeyRef = useRef(null);
+  const botActionModeRef = useRef("auto");
+  const tableHotkeysRef = useRef({});
   const [connectionState, setConnectionState] = useState("connecting");
   const [botState, setBotState] = useState("off");
   const [botSeatNumber, setBotSeatNumber] = useState(null);
@@ -142,26 +198,52 @@ function App() {
   const [uiDensity, setUiDensity] = useState("compact");
   const [showBbStacks, setShowBbStacks] = useState(true);
   const [showAdvancedHandInfo, setShowAdvancedHandInfo] = useState(false);
+  const [showHandLog, setShowHandLog] = useState(false);
   const [showPresetButtons, setShowPresetButtons] = useState(false);
+  const [preflopOpenBbMultiple, setPreflopOpenBbMultiple] = useState(readStoredPreflopOpenBbMultiple);
   const [showDevTools, setShowDevTools] = useState(false);
   const [roomState, setRoomState] = useState(null);
-  const [lastError, setLastError] = useState(null);
+  const [lastServerError, setLastServerError] = useState(null);
+  const [sendBlockedNotice, setSendBlockedNotice] = useState(null);
+  const [mainSocketEpoch, setMainSocketEpoch] = useState(0);
+  const [botLastActionKey, setBotLastActionKey] = useState(null);
   const isSocketOpen = connectionState === "open";
   const isBotOpen = botState === "open";
+  const connectionStatusLabel =
+    connectionState === "open"
+      ? "Connected"
+      : connectionState === "connecting"
+        ? "Connecting…"
+        : connectionState === "error"
+          ? "Error"
+          : "Disconnected";
 
   const appendEvent = (line) => {
     const stamped = `[${timestamp()}] ${line}`;
     setEvents((prev) => [...prev.slice(-79), stamped]);
   };
-  const { sendJson, sendBotJson } = useSocketSenders(wsRef, botWsRef, appendEvent);
+  const onMainSendBlocked = useCallback(() => {
+    setSendBlockedNotice("Not connected — your action was not sent.");
+  }, []);
+  const { sendJson, sendBotJson } = useSocketSenders(wsRef, botWsRef, appendEvent, onMainSendBlocked);
+
+  const clearPendingBotAutoAction = () => {
+    if (botAutoActionTimeoutRef.current !== null) {
+      clearTimeout(botAutoActionTimeoutRef.current);
+      botAutoActionTimeoutRef.current = null;
+    }
+    botPendingActionKeyRef.current = null;
+  };
 
   const stopBot = () => {
     const ws = botWsRef.current;
+    clearPendingBotAutoAction();
     if (ws) {
       ws.close();
       botWsRef.current = null;
     }
     botLastActionKeyRef.current = null;
+    setBotLastActionKey(null);
     botSeatRef.current = null;
     setBotSeatNumber(null);
     setBotState("off");
@@ -178,10 +260,12 @@ function App() {
   const runBotDecision = (decision, delayMs = 0) => {
     if (!decision) return false;
     if (botLastActionKeyRef.current === decision.actionKey) return false;
-    botLastActionKeyRef.current = decision.actionKey;
+    if (botPendingActionKeyRef.current === decision.actionKey) return false;
 
     const sendAction = () => {
       if (!botWsRef.current || botWsRef.current.readyState !== WebSocket.OPEN) return;
+      botLastActionKeyRef.current = decision.actionKey;
+      setBotLastActionKey(decision.actionKey);
       sendBotJson({ type: "player_action", actionType: decision.actionType }, decision.label);
     };
 
@@ -190,8 +274,14 @@ function App() {
       return true;
     }
 
-    setTimeout(() => {
+    clearPendingBotAutoAction();
+    botPendingActionKeyRef.current = decision.actionKey;
+    botAutoActionTimeoutRef.current = setTimeout(() => {
+      if (botPendingActionKeyRef.current !== decision.actionKey) return;
+      if (botActionModeRef.current !== "auto") return;
       sendAction();
+      botAutoActionTimeoutRef.current = null;
+      botPendingActionKeyRef.current = null;
     }, delayMs);
     return true;
   };
@@ -203,22 +293,125 @@ function App() {
   };
 
   const runBotStep = () => {
-    const decision = getBotDecision(roomState);
-    if (!decision) {
-      appendEvent("[bot] step mode: no action available");
+    if (botActionMode !== "step") {
+      appendEvent("[bot] step ignored: switch bot mode to step first");
       return;
     }
-    runBotDecision(decision, 0);
-    appendEvent(`[bot] step mode action: ${decision.actionType} (toCall=${decision.toCall})`);
+    clearPendingBotAutoAction();
+    const roundState = roomState?.round;
+    const pendingSeatNumbers = Array.isArray(roundState?.pendingSeatNumbers)
+      ? roundState.pendingSeatNumbers
+      : [];
+    const turnSeat = roundState?.turnSeatNumber;
+    const localSeatFromRoom =
+      (roomState?.players ?? []).find(
+        (candidate) => candidate.seatNumber !== null && candidate.playerName === playerName,
+      )?.seatNumber ?? null;
+    if (roundState?.inProgress && pendingSeatNumbers.length === 0) {
+      if (localSeatFromRoom !== null && turnSeat === localSeatFromRoom) {
+        appendEvent("[bot] step blocked: your action first — use Check / Call / Raise");
+        return;
+      }
+      sendJson({ type: "step_progress" }, "step_progress");
+      appendEvent("[bot] step mode: progression advanced");
+      return;
+    }
+    const decision = getBotDecision(roomState);
+    if (decision) {
+      runBotDecision(decision, 0);
+      appendEvent(`[bot] step mode action: ${decision.actionType} (toCall=${decision.toCall})`);
+      return;
+    }
+    if (roundState?.inProgress && pendingSeatNumbers.length > 0) {
+      appendEvent(`[bot] step blocked: awaiting seat ${roundState.turnSeatNumber ?? "?"} action`);
+      return;
+    }
+    sendJson({ type: "step_progress" }, "step_progress");
+    appendEvent("[bot] step mode: progression advanced");
   };
 
+  useEffect(() => {
+    const onTableHotkey = (event) => {
+      const targetElement = event.target;
+      const tagName =
+        targetElement && typeof targetElement.tagName === "string"
+          ? targetElement.tagName.toLowerCase()
+          : "";
+      const isTypingTarget =
+        tagName === "input" ||
+        tagName === "textarea" ||
+        targetElement?.isContentEditable === true;
+      if (isTypingTarget) return;
+
+      const h = tableHotkeysRef.current;
+      if (!h) return;
+
+      if (event.code === "Space" && h.botActionMode === "step") {
+        const stepDecision = h.getBotDecision(h.roomState);
+        if (stepDecision) {
+          event.preventDefault();
+          h.runBotStep();
+          return;
+        }
+      }
+
+      if (!h.isLocalTurn) return;
+
+      if (event.code === "Space" && h.canCheckAction) {
+        event.preventDefault();
+        h.submitCheck();
+        return;
+      }
+      if (event.code === "KeyC" && h.canCheckAction) {
+        event.preventDefault();
+        h.submitCheck();
+        return;
+      }
+      if (event.code === "KeyF" && h.canFoldAction) {
+        event.preventDefault();
+        h.submitFold();
+        return;
+      }
+      if (event.code === "KeyL" && h.canCallAction) {
+        event.preventDefault();
+        h.submitCall();
+        return;
+      }
+      if (event.code === "KeyR" && h.canRaiseAction) {
+        event.preventDefault();
+        h.handleRaiseClick();
+        return;
+      }
+      if (event.code === "KeyB" && h.canBetAction) {
+        event.preventDefault();
+        h.setShowPresetButtons((previous) => !previous);
+      }
+    };
+    window.addEventListener("keydown", onTableHotkey);
+    return () => {
+      window.removeEventListener("keydown", onTableHotkey);
+    };
+  }, []);
+
   const handleBotActionModeChange = (nextMode) => {
+    clearPendingBotAutoAction();
     setBotActionMode(nextMode);
+    botActionModeRef.current = nextMode;
     appendEvent(`[bot] action mode: ${nextMode}`);
+    if (isSocketOpen && roomState?.roomId) {
+      sendJson(
+        { type: "set_manual_step_mode", enabled: nextMode === "step" },
+        "set_manual_step_mode",
+      );
+    }
     if (nextMode === "auto" && roomState) {
       maybeRunBotAction(roomState);
     }
   };
+
+  useEffect(() => {
+    botActionModeRef.current = botActionMode;
+  }, [botActionMode]);
 
   const startBot = (targetSeatNumber, targetRoomId = roomId) => {
     if (!Number.isInteger(targetSeatNumber) || targetSeatNumber < 1 || targetSeatNumber > 9) {
@@ -305,12 +498,21 @@ function App() {
     sendJson({ type: "sit_down", seatNumber: targetSeatNumber }, `sit_down (${targetSeatNumber})`);
   };
 
+  const reconnectMainSocket = useCallback(() => {
+    setLastServerError(null);
+    setSendBlockedNotice(null);
+    setMainSocketEpoch((epoch) => epoch + 1);
+  }, []);
+
+  // Main table WebSocket: remount when `mainSocketEpoch` changes (Reconnect button).
   useEffect(() => {
+    setConnectionState("connecting");
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
       setConnectionState("open");
+      setSendBlockedNotice(null);
       appendEvent("[local] websocket open");
     };
 
@@ -343,19 +545,24 @@ function App() {
         setRoomState(parsed);
       }
 
-      if (parsed.type === "error") {
-        setLastError(parsed.message);
+      if (parsed.type === "error" && typeof parsed.message === "string") {
+        setLastServerError({
+          message: parsed.message,
+          category: classifyServerErrorMessage(parsed.message),
+        });
       }
     };
 
     return () => {
+      clearPendingBotAutoAction();
       ws.close();
       if (wsRef.current === ws) {
         wsRef.current = null;
       }
       stopBot();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stopBot/appendEvent omitted to avoid reconnect churn
+  }, [mainSocketEpoch]);
 
   const seats = Array.from({ length: 9 }, (_, index) => index + 1);
   const playersBySeat = new Map();
@@ -366,7 +573,6 @@ function App() {
       }
     }
   }
-  const seatedPlayers = [...playersBySeat.values()];
   const table = roomState?.table ?? {};
   const round = roomState?.round ?? {};
   const blindUnitValue = Math.max(1, Number(round.bigBlind ?? table.bigBlind ?? 20));
@@ -416,8 +622,25 @@ function App() {
   const raiseStep = Math.max(1, Math.round(blindUnitValue / 2));
   const canRaiseAction =
     canActNow && (round.currentBet ?? 0) > 0 && raiseMaxTarget >= raiseMinTarget;
+  const isPreflopStreet = round.street === "preflop";
+  const preflopRaiseTarget =
+    isPreflopStreet && canRaiseAction
+      ? getRecommendedPreflopRaiseTo({
+          bigBlind: blindUnitValue,
+          currentBet: round.currentBet ?? 0,
+          raiseMinTarget,
+          raiseMaxTarget,
+          openBbMultiple: preflopOpenBbMultiple,
+        })
+      : null;
+  const preflopRaiseUi = Boolean(isPreflopStreet && canRaiseAction);
+  const preflopSizingHint =
+    (round.currentBet ?? 0) <= blindUnitValue
+      ? `${preflopOpenBbMultiple}×BB`
+      : "3× facing";
   const showAmountControls = canBetAction || canRaiseAction;
   const isHost = Boolean(playerName && table.hostPlayerName === playerName);
+  const hostPlayerName = table.hostPlayerName || null;
   const autoDealEnabled = table.autoDealEnabled !== false;
   const autoDealDelayMs = Number(table.autoDealDelayMs) || 1800;
   const betPresetPercentages = parseBetPresetPercentages(betPresetText);
@@ -443,28 +666,47 @@ function App() {
           : `Hand ended: ${round.lastEndReason}`
       : null;
   const currentStreetActions = actionLog.filter((action) => action.street === round.street);
-  const lastAction = actionLog.length > 0 ? actionLog[actionLog.length - 1] : null;
+  const recentActionSummaries = [...actionLog]
+    .slice(-6)
+    .reverse()
+    .map((action) => formatActionSummary(action));
+  const raiseSliderPosition = getRaiseSliderPositionFromAmount(
+    amount,
+    raiseMinTarget,
+    raiseMaxTarget,
+  );
+  const raiseQuarterAmount = getRaiseAmountFromSliderPosition(
+    25,
+    raiseMinTarget,
+    raiseMaxTarget,
+    raiseStep,
+  );
+  const raiseMiddleAmount = getRaiseAmountFromSliderPosition(
+    50,
+    raiseMinTarget,
+    raiseMaxTarget,
+    raiseStep,
+  );
+  const raiseThreeQuarterAmount = getRaiseAmountFromSliderPosition(
+    75,
+    raiseMinTarget,
+    raiseMaxTarget,
+    raiseStep,
+  );
   const heroLastAction =
     localSeatNumber !== null
       ? [...currentStreetActions].reverse().find((action) => action.seatNumber === localSeatNumber) ?? null
       : null;
-  const turnToCall = turnPlayer
-    ? Math.max(0, (round.currentBet ?? 0) - (turnPlayer.committedThisStreet ?? 0))
-    : 0;
-  const nextActionSummary = hasRound
-    ? round.turnSeatNumber
-      ? `${turnPlayer?.playerName || `Seat ${round.turnSeatNumber}`} to act${
-          turnToCall > 0 ? ` (call ${formatChipCount(turnToCall)})` : " (can check)"
-        }`
-      : "All remaining players are all-in - running board"
-    : "No active hand";
-  const actionStatusLabel = hasRound
-    ? isLocalTurn
+  const turnActorLabel = turnPlayer?.playerName || `Seat ${round.turnSeatNumber}`;
+  const actionStatusLabel = !hasRound
+    ? hasLastHandResult
+      ? ""
+      : "Ready"
+    : isLocalTurn
       ? "Your turn"
       : round.turnSeatNumber
-        ? `Acting: ${turnPlayer?.playerName || `Seat ${round.turnSeatNumber}`}`
-        : "Board running out (all-in)"
-    : "No active hand";
+        ? `${turnActorLabel}'s turn`
+        : "Runout";
   const localCanActSummary = !hasRound
     ? "No active hand"
     : isLocalTurn
@@ -476,31 +718,40 @@ function App() {
     localToCall > 0
       ? Math.round((localToCall / Math.max(1, (round.pot ?? 0) + localToCall)) * 100)
       : 0;
-  const botStepDecision = botActionMode === "step" ? getBotDecision(roomState) : null;
+  const botStepDecision =
+    botActionMode === "step"
+      ? computeBotDecision(roomState, botSeatNumber, botLastActionKey)
+      : null;
   const isBotStepReady = Boolean(botStepDecision);
-  const livePotBreakdown = hasRound
-    ? buildPotBreakdownPreview(players, foldedSeatNumbers)
-    : [];
-  const settledPotBreakdown =
-    !hasRound && Array.isArray(round.lastPotBreakdown) ? round.lastPotBreakdown : [];
-  const visiblePotBreakdown = hasRound ? livePotBreakdown : settledPotBreakdown;
-  const compactPotSummary = visiblePotBreakdown.length
-    ? visiblePotBreakdown
-        .map((pot, index) =>
-          `${index === 0 ? "Main" : `Side ${index}`}: ${formatChipCount(pot.amount ?? 0)}`,
-        )
-        .join(" | ")
-    : "Main: 0";
-  const potDetailLines = visiblePotBreakdown.map((pot, index) => {
-    const winnerLabel =
-      !hasRound && Array.isArray(pot.winnerSeatNumbers) && pot.winnerSeatNumbers.length > 0
-        ? ` -> winner ${pot.winnerSeatNumbers.join(", ")}`
-        : "";
-    return `${index === 0 ? "Main" : `Side ${index}`} ${formatChipCount(pot.amount ?? 0)} (${
-      Array.isArray(pot.eligibleSeatNumbers) ? pot.eligibleSeatNumbers.join(", ") : "-"
-    })${winnerLabel}`;
-  });
-
+  const stepPendingSeatNumbers = Array.isArray(round.pendingSeatNumbers) ? round.pendingSeatNumbers : [];
+  const isStepBlockedByHumanAction =
+    botActionMode === "step" &&
+    hasRound &&
+    !isBotStepReady &&
+    stepPendingSeatNumbers.length > 0 &&
+    round.turnSeatNumber !== botSeatNumber;
+  // Do not treat "no pending seats" as step-ready while it's still the human's turn — the server
+  // can briefly expose empty pending; advancing then would be wrong and the button must not glow.
+  const canAdvanceByStepProgress =
+    hasRound && stepPendingSeatNumbers.length === 0 && !isLocalTurn;
+  const isBotStepPossible =
+    isBotOpen &&
+    botActionMode === "step" &&
+    !isStepBlockedByHumanAction &&
+    (isBotStepReady || canAdvanceByStepProgress);
+  const botStepGoLabel =
+    !isBotOpen || botActionMode !== "step"
+      ? "Go next (Space)"
+      : isBotStepPossible
+        ? "▶ Next (Space)"
+        : "Not ready — wait";
+  const occupiedSeatNumbers = seats.filter((seat) => playersBySeat.has(seat));
+  const openSeatNumbers = seats.filter((seat) => !playersBySeat.has(seat));
+  const preferredRejoinSeat = Math.max(1, Math.min(9, Number(seatNumber) || 1));
+  const onRejoinPreferredSeat = () => {
+    joinLocalSeat(preferredRejoinSeat);
+    setOpenSeatMenuSeat(null);
+  };
   const applyBetPreset = (percent) => {
     const pot = Math.max(1, Number(round.pot ?? 0));
     const currentBet = Number(round.currentBet ?? 0);
@@ -513,25 +764,87 @@ function App() {
       setShowRaiseSlider(true);
     }
     setAmount(nextAmount);
+    if (canBetAction) {
+      sendJson(
+        { type: "player_action", actionType: "bet", amount: nextAmount },
+        "player_action:bet",
+      );
+      setShowPresetButtons(false);
+    }
+  };
+
+  const handlePreflopFineTuneOpen = () => {
+    if (!preflopRaiseUi || preflopRaiseTarget === null) return;
+    setAmount(preflopRaiseTarget);
+    setShowRaiseSlider(true);
+    setShowPresetButtons(false);
+  };
+
+  const editPreflopOpenBbMultiple = () => {
+    const raw = window.prompt(
+      "Open-raise size: multiple of the big blind (typical online default is about 2.5–3×).",
+      String(preflopOpenBbMultiple),
+    );
+    if (raw === null) return;
+    const next = Number(String(raw).trim());
+    if (!Number.isFinite(next) || next < 1.5 || next > 6) {
+      appendEvent("[local] preflop open multiplier ignored: use 1.5–6");
+      return;
+    }
+    const rounded = Math.round(next * 20) / 20;
+    setPreflopOpenBbMultiple(rounded);
+    try {
+      localStorage.setItem(PREFLOP_OPEN_BB_KEY, String(rounded));
+    } catch {
+      // ignore
+    }
   };
 
   const handleRaiseClick = () => {
     if (!canRaiseAction) return;
-    setShowRaiseSlider((previous) => {
-      if (!previous) {
-        if (amount < raiseMinTarget || amount > raiseMaxTarget) {
-          setAmount(raiseMinTarget);
-        }
+    if (preflopRaiseUi && preflopRaiseTarget !== null) {
+      if (showRaiseSlider) {
+        const clampedAmount = Math.max(raiseMinTarget, Math.min(raiseMaxTarget, Math.round(amount)));
+        sendJson(
+          { type: "player_action", actionType: "raise_to", amount: clampedAmount },
+          "player_action:raise_to",
+        );
+        setShowRaiseSlider(false);
+        setShowPresetButtons(false);
+        return;
       }
-      return !previous;
-    });
+      sendJson(
+        { type: "player_action", actionType: "raise_to", amount: preflopRaiseTarget },
+        "player_action:raise_to",
+      );
+      return;
+    }
+    const clampedAmount = Math.max(raiseMinTarget, Math.min(raiseMaxTarget, Math.round(amount)));
+    if (showRaiseSlider) {
+      sendJson(
+        { type: "player_action", actionType: "raise_to", amount: clampedAmount },
+        "player_action:raise_to",
+      );
+      setShowRaiseSlider(false);
+      setShowPresetButtons(false);
+      return;
+    }
+    if (clampedAmount !== amount) {
+      setAmount(clampedAmount);
+    }
+    setShowRaiseSlider(true);
   };
 
   const handleRaiseSliderChange = (value) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
-    const clamped = Math.max(raiseMinTarget, Math.min(raiseMaxTarget, Math.round(parsed)));
-    setAmount(clamped);
+    const nextAmount = getRaiseAmountFromSliderPosition(
+      parsed,
+      raiseMinTarget,
+      raiseMaxTarget,
+      raiseStep,
+    );
+    setAmount(nextAmount);
   };
   const handleRaiseNudge = (stepCount) => {
     if (!canRaiseAction) return;
@@ -550,29 +863,48 @@ function App() {
     setAmount(Math.min(raiseMaxTarget, Math.max(raiseMinTarget, Math.round(round.pot ?? 0))));
   const handleSetMinRaise = () => setAmount(raiseMinTarget);
   const handleSetAllInRaise = () => setAmount(raiseMaxTarget);
-  const submitCheck = () =>
+  const closeActionPanels = () => {
+    setShowRaiseSlider(false);
+    setShowPresetButtons(false);
+  };
+  const submitCheck = () => {
+    closeActionPanels();
     sendJson({ type: "player_action", actionType: "check" }, "player_action:check");
-  const submitCall = () =>
+  };
+  const submitCall = () => {
+    closeActionPanels();
     sendJson({ type: "player_action", actionType: "call" }, "player_action:call");
-  const submitFold = () =>
+  };
+  const submitFold = () => {
+    closeActionPanels();
     sendJson({ type: "player_action", actionType: "fold" }, "player_action:fold");
-  const submitBet = () =>
+  };
+  const submitBet = () => {
+    closeActionPanels();
     sendJson(
       { type: "player_action", actionType: "bet", amount },
       "player_action:bet",
     );
-  const submitRaise = () =>
-    sendJson(
-      { type: "player_action", actionType: "raise_to", amount },
-      "player_action:raise_to",
-    );
-
-  useEffect(() => {
-    if (!canRaiseAction) {
-      setShowRaiseSlider(false);
+  };
+  const handleAmountInputKeyDown = (event) => {
+    if (event.key !== "Enter") return;
+    if (!canActNow) return;
+    event.preventDefault();
+    if (canBetAction) {
+      submitBet();
+      return;
     }
-  }, [canRaiseAction]);
-
+    if (!canRaiseAction) return;
+    if (preflopRaiseUi && preflopRaiseTarget !== null && !showRaiseSlider) {
+      handleRaiseClick();
+      return;
+    }
+    if (!showRaiseSlider) {
+      setShowRaiseSlider(true);
+      return;
+    }
+    handleRaiseClick();
+  };
   const editBetPresetAtIndex = (index) => {
     const currentPresets = parseBetPresetPercentages(betPresetText);
     if (index < 0 || index >= currentPresets.length) return;
@@ -592,6 +924,28 @@ function App() {
     setBetPresetText(currentPresets.join(","));
   };
 
+  // Ref snapshot for window keydown listener (stable effect); must update when handlers/state change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- functions are intentionally refreshed every render
+  useLayoutEffect(() => {
+    tableHotkeysRef.current = {
+      botActionMode,
+      roomState,
+      getBotDecision,
+      runBotStep,
+      isLocalTurn,
+      canCheckAction,
+      canCallAction,
+      canFoldAction,
+      canRaiseAction,
+      canBetAction,
+      submitCheck,
+      submitCall,
+      submitFold,
+      handleRaiseClick,
+      setShowPresetButtons,
+    };
+  });
+
   return (
     <main className={`table-page ${uiDensity === "comfort" ? "density-comfort" : "density-compact"}`}>
       <header className="top-bar">
@@ -607,10 +961,19 @@ function App() {
           >
             Start game
           </button>
-          <span className={`status-badge status-${connectionState}`}>{connectionState}</span>
+          <span className={`status-badge status-${connectionState}`} title="WebSocket to game server">
+            {connectionStatusLabel}
+          </span>
+          <span className={`role-badge ${isHost ? "role-host" : "role-player"}`}>
+            {isHost ? "Role: Host" : "Role: Player"}
+          </span>
           <span className={`bot-badge bot-${botState}`}>Bot: {botState}</span>
-          <button className="top-density-button" onClick={() => setShowBbStacks((previous) => !previous)}>
-            Stacks: {showBbStacks ? "chips+bb" : "chips"}
+          <button
+            className="top-density-button"
+            title="Switch stack display between big blinds (BB) and table chips"
+            onClick={() => setShowBbStacks((previous) => !previous)}
+          >
+            Stacks: {showBbStacks ? "BB" : "Chips"}
           </button>
           <button className="top-density-button" onClick={() => setUiDensity((previous) => (previous === "compact" ? "comfort" : "compact"))}>
             Density: {uiDensity === "compact" ? "Compact" : "Comfort"}
@@ -618,62 +981,121 @@ function App() {
         </div>
       </header>
 
-      <section className={`table-stage ${uiMotionPaused ? "motion-paused" : ""}`}>
-        <div className="table-felt" onClick={() => setOpenSeatMenuSeat(null)}>
-          <div className="table-felt-content">
-          <TableCenterBoard
-            potValue={round.pot ?? 0}
-            potChipCount={potChipCount}
-            boardSlots={boardSlots}
-            cardLabel={cardLabel}
-            cardSuitClass={cardSuitClass}
-          />
+      {connectionState !== "open" || lastServerError || sendBlockedNotice ? (
+        <div
+          className={`connection-banner ${
+            connectionState !== "open" ? "connection-banner--offline" : "connection-banner--warn"
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          {connectionState !== "open" ? (
+            <div className="connection-banner-row connection-banner-row--main">
+              <p className="connection-banner-main">
+                {connectionState === "connecting"
+                  ? "Connecting to the table…"
+                  : connectionState === "error"
+                    ? "Connection error — check that the game server is running, then reconnect."
+                    : "Disconnected from the table — reconnect to keep playing."}
+              </p>
+              <div className="connection-banner-actions">
+                <button
+                  type="button"
+                  className="connection-reconnect-button"
+                  onClick={reconnectMainSocket}
+                  disabled={connectionState === "connecting"}
+                >
+                  {connectionState === "connecting" ? "Connecting…" : "Reconnect"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {connectionState !== "open" ? (
+            <p className="connection-banner-hint" title={WS_URL}>
+              Endpoint <span className="connection-banner-mono">{WS_URL}</span>
+            </p>
+          ) : null}
+          {connectionState === "open" && sendBlockedNotice ? (
+            <div className="connection-banner-row connection-banner-row--notice">
+              <p className="connection-banner-client-notice">{sendBlockedNotice}</p>
+              <button
+                type="button"
+                className="connection-dismiss-button"
+                onClick={() => setSendBlockedNotice(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+          {lastServerError ? (
+            <div
+              className={`connection-banner-row connection-banner-error connection-banner-error--${lastServerError.category}`}
+            >
+              <p className="connection-banner-error-text">
+                <span className="connection-banner-error-label">
+                  {serverErrorCategoryLabel(lastServerError.category)}:
+                </span>{" "}
+                {lastServerError.message}
+              </p>
+              <button
+                type="button"
+                className="connection-dismiss-button"
+                onClick={() => setLastServerError(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
-          <SeatNodesLayer
-            seats={seats}
-            seatLayoutMap={SEAT_LAYOUT}
-            playersBySeat={playersBySeat}
-            round={round}
-            foldedSeatNumbers={foldedSeatNumbers}
-            localSeatNumber={localSeatNumber}
-            hasRound={hasRound}
-            blindUnitValue={blindUnitValue}
-            showBbStacks={showBbStacks}
-            openSeatMenuSeat={openSeatMenuSeat}
-            setOpenSeatMenuSeat={setOpenSeatMenuSeat}
-            joinLocalSeat={joinLocalSeat}
-            isBotOpen={isBotOpen}
-            appendEvent={appendEvent}
-            quickMode={quickMode}
-            roomId={roomId}
-            startBot={startBot}
-            cardSuitClass={cardSuitClass}
-            cardLabel={cardLabel}
-            formatChipCount={formatChipCount}
-            getBetMarkerPosition={getBetMarkerPosition}
-          />
+      <section className={`table-stage ${uiMotionPaused ? "motion-paused" : ""}`}>
+        <div className="table-pov-shell">
+          <div className="table-felt" onClick={() => setOpenSeatMenuSeat(null)}>
+            <div className="table-felt-content">
+            <TableCenterBoard
+              potValue={round.pot ?? 0}
+              potChipCount={potChipCount}
+              boardSlots={boardSlots}
+              cardLabel={cardLabel}
+              cardSuitClass={cardSuitClass}
+            />
+
+            <SeatNodesLayer
+              seats={seats}
+              seatLayoutMap={SEAT_LAYOUT}
+              playersBySeat={playersBySeat}
+              round={round}
+              foldedSeatNumbers={foldedSeatNumbers}
+              localSeatNumber={localSeatNumber}
+              hasRound={hasRound}
+              blindUnitValue={blindUnitValue}
+              showBbStacks={showBbStacks}
+              openSeatMenuSeat={openSeatMenuSeat}
+              setOpenSeatMenuSeat={setOpenSeatMenuSeat}
+              joinLocalSeat={joinLocalSeat}
+              isBotOpen={isBotOpen}
+              appendEvent={appendEvent}
+              quickMode={quickMode}
+              roomId={roomId}
+              startBot={startBot}
+              cardSuitClass={cardSuitClass}
+              cardLabel={cardLabel}
+              formatChipCount={formatChipCount}
+              getBetMarkerPosition={getBetMarkerPosition}
+            />
+            </div>
           </div>
         </div>
 
-        <aside className="table-action-corner">
-          <div className="table-action-dock">
+        <div className="table-hud-row">
+          <aside className="table-action-corner">
+            <div className="table-action-dock" role="region" aria-label="Table actions">
             <HandStatusPanel
               statusLabel={actionStatusLabel}
-              lastActionSummary={formatActionSummary(lastAction)}
-              nextActionSummary={nextActionSummary}
               showResultLine={!hasRound && Boolean(winnerSummary || lastShowdown?.winningHandLabel)}
               winnerSummary={winnerSummary}
               winningHandLabel={lastShowdown?.winningHandLabel}
-            />
-            <PotClarityPanel
-              hasRound={hasRound}
-              localPlayer={localPlayer}
-              localStackBehind={localStackBehind}
-              localToCall={localToCall}
-              localToCallDisplay={formatChipCount(localToCall)}
-              compactPotSummary={compactPotSummary}
-              showAdvancedHandInfo={showAdvancedHandInfo}
-              potDetailLines={potDetailLines}
             />
             <HandContextPanel
               showAdvancedHandInfo={showAdvancedHandInfo}
@@ -690,6 +1112,10 @@ function App() {
               localPotOddsPercent={localPotOddsPercent}
               heroLastActionLabel={heroLastAction ? formatActionType(heroLastAction.actionType) : "-"}
             />
+            <p className="table-keyboard-hints" aria-live="polite">
+              <span className="sr-only">Keyboard shortcuts when it is your turn: </span>
+              Space or C check · F fold · L call · R raise · B toggle bet presets
+            </p>
             <ActionControlsPanel
               canActNow={canActNow}
               hasRound={hasRound}
@@ -703,18 +1129,22 @@ function App() {
               localToCall={localToCall}
               raiseMinTarget={raiseMinTarget}
               raiseMaxTarget={raiseMaxTarget}
-              raiseStep={raiseStep}
               localCommittedThisStreet={localCommittedThisStreet}
               showPresetButtons={showPresetButtons}
               betPresetPercentages={betPresetPercentages}
-              showRaiseSlider={showRaiseSlider}
+              showRaiseSlider={showRaiseSlider && canRaiseAction}
+              preflopRaiseUi={preflopRaiseUi}
+              preflopRaiseTarget={preflopRaiseTarget ?? raiseMinTarget}
+              preflopSizingHint={preflopSizingHint}
               onAmountChange={setAmount}
+              onAmountInputKeyDown={handleAmountInputKeyDown}
               onCheck={submitCheck}
               onCall={submitCall}
               onFold={submitFold}
-              onBet={submitBet}
               onRaiseClick={handleRaiseClick}
               onTogglePresets={() => setShowPresetButtons((previous) => !previous)}
+              onOpenRaiseFineTune={handlePreflopFineTuneOpen}
+              onEditPreflopSizing={editPreflopOpenBbMultiple}
               onApplyPreset={applyBetPreset}
               onEditPreset={editBetPresetAtIndex}
               onRaiseNudge={handleRaiseNudge}
@@ -722,21 +1152,49 @@ function App() {
               onSetPotRaise={handlePotRaise}
               onSetMinRaise={handleSetMinRaise}
               onSetAllIn={handleSetAllInRaise}
+              raiseSliderPosition={raiseSliderPosition}
+              raiseQuarterAmount={raiseQuarterAmount}
+              raiseMiddleAmount={raiseMiddleAmount}
+              raiseThreeQuarterAmount={raiseThreeQuarterAmount}
               onRaiseSliderChange={handleRaiseSliderChange}
-              onSubmitRaise={submitRaise}
               onCloseRaiseSlider={() => setShowRaiseSlider(false)}
             />
-          </div>
-        </aside>
+            </div>
+          </aside>
 
-        <aside className="table-dev-corner">
-          <button className="table-dev-toggle" onClick={() => setShowDevTools((previous) => !previous)}>
-            {showDevTools ? "Hide dev tools" : "Show dev tools"}
-          </button>
-          {showDevTools ? (
-          <div className="table-dev-dock">
-            <div className="table-dev-title">Dev tools</div>
-            <div className="table-dev-row">
+          <aside className="table-dev-corner">
+            <div className="table-hand-log-corner">
+            <button
+              className={`table-hand-log-toggle ${showHandLog ? "table-preview-toggle-active" : ""}`}
+              onClick={() => setShowHandLog((previous) => !previous)}
+            >
+              Hand log
+            </button>
+            {showHandLog ? (
+              <div className="table-hand-log-panel">
+                <div className="table-hand-log-title">Recent actions</div>
+                <ul className="table-hand-log-list">
+                  {recentActionSummaries.length > 0 ? (
+                    recentActionSummaries.map((summary, index) => (
+                      <li key={`${summary}-${index}`}>{summary}</li>
+                    ))
+                  ) : (
+                    <li>No actions yet.</li>
+                  )}
+                </ul>
+              </div>
+            ) : null}
+            </div>
+            <button
+            className={`table-dev-toggle ${showDevTools ? "table-preview-toggle-active" : ""}`}
+            onClick={() => setShowDevTools((previous) => !previous)}
+            >
+            Dev tools
+            </button>
+            {showDevTools ? (
+            <div className="table-dev-dock">
+              <div className="table-dev-title">Dev tools</div>
+              <div className="table-dev-row">
               <button disabled={!isSocketOpen} onClick={() => quickJoin("p1", 1)}>
                 Join P1
               </button>
@@ -745,52 +1203,76 @@ function App() {
               </button>
             </div>
             <div className="table-dev-row">
-              {isBotOpen ? (
-                <>
-                  <button onClick={stopBot}>Stop bot (seat {botSeatNumber})</button>
-                  <button
-                    className={`bot-mode-button ${botActionMode === "auto" ? "bot-mode-button-active" : ""}`}
-                    onClick={() => handleBotActionModeChange("auto")}
-                  >
-                    Bot auto
-                  </button>
-                  <button
-                    className={`bot-mode-button ${botActionMode === "step" ? "bot-mode-button-active" : ""}`}
-                    onClick={() => handleBotActionModeChange("step")}
-                  >
-                    Bot step
-                  </button>
-                  {botActionMode === "step" ? (
-                    <button className="bot-step-button" disabled={!isBotStepReady} onClick={runBotStep}>
-                      Run bot action
-                    </button>
-                  ) : null}
-                </>
-              ) : (
-                <span className="table-dev-note">Click an open seat to add bot</span>
-              )}
+              <button disabled={!isBotOpen} onClick={stopBot}>
+                {isBotOpen ? `Stop bot (seat ${botSeatNumber})` : "Stop bot"}
+              </button>
+              <button
+                className={`bot-mode-button ${isBotOpen && botActionMode === "auto" ? "bot-mode-button-active" : ""}`}
+                disabled={!isBotOpen}
+                onClick={() => handleBotActionModeChange("auto")}
+              >
+                Bot auto
+              </button>
+              <button
+                className={`bot-mode-button ${isBotOpen && botActionMode === "step" ? "bot-mode-button-active" : ""}`}
+                disabled={!isBotOpen}
+                onClick={() => handleBotActionModeChange("step")}
+              >
+                Bot step
+              </button>
+              <button
+                type="button"
+                className={`bot-step-button ${
+                  isBotOpen && botActionMode === "step"
+                    ? isBotStepPossible
+                      ? "bot-step-button-ready"
+                      : "bot-step-button-idle"
+                    : ""
+                }`}
+                disabled={!isBotOpen || botActionMode !== "step"}
+                onClick={runBotStep}
+              >
+                {botStepGoLabel}
+              </button>
             </div>
-            {isBotOpen ? (
-              <div className="table-dev-row">
-                <span className="table-dev-note">
-                  {botActionMode === "auto"
+            <div className="table-dev-row">
+              <span
+                className={`table-dev-note ${
+                  isBotOpen && botActionMode === "step"
+                    ? isBotStepPossible
+                      ? "table-dev-note-step-ready"
+                      : "table-dev-note-step-wait"
+                    : ""
+                }`}
+              >
+                {!isBotOpen
+                  ? "No bot connected. Click an open seat and choose Sit as bot."
+                  : botActionMode === "auto"
                     ? "Bot mode: auto-play on turn"
                     : isBotStepReady
-                      ? `Bot step ready: ${botStepDecision.actionType} (toCall ${botStepDecision.toCall})`
-                      : "Bot step mode: waiting for a legal action"}
-                </span>
-              </div>
-            ) : null}
+                        ? `Step ready: ${botStepDecision.actionType} (${botStepDecision.toCall} toCall) — press Go next action`
+                        : isStepBlockedByHumanAction
+                          ? `Step blocked: seat ${round.turnSeatNumber} must act first`
+                          : "Step mode: no bot action pending. Press Go next action to advance street/hand."}
+              </span>
+            </div>
             <div className="table-dev-row">
-              <button onClick={() => setUiMotionPaused((previous) => !previous)}>
+              <button
+                className={`dev-toggle-button ${uiMotionPaused ? "dev-toggle-button-on" : "dev-toggle-button-off"}`}
+                onClick={() => setUiMotionPaused((previous) => !previous)}
+              >
                 UI motion: {uiMotionPaused ? "PAUSED" : "LIVE"}
               </button>
-              <button onClick={() => setShowAdvancedHandInfo((previous) => !previous)}>
+              <button
+                className={`dev-toggle-button ${showAdvancedHandInfo ? "dev-toggle-button-on" : "dev-toggle-button-off"}`}
+                onClick={() => setShowAdvancedHandInfo((previous) => !previous)}
+              >
                 Advanced hand info: {showAdvancedHandInfo ? "ON" : "OFF"}
               </button>
             </div>
             <div className="table-dev-row">
               <button
+                className={`dev-toggle-button ${autoDealEnabled ? "dev-toggle-button-on" : "dev-toggle-button-off"}`}
                 disabled={!isSocketOpen || !isHost}
                 onClick={() =>
                   sendJson(
@@ -826,10 +1308,11 @@ function App() {
               >
                 Ping
               </button>
+              </div>
             </div>
-          </div>
-          ) : null}
-        </aside>
+            ) : null}
+          </aside>
+        </div>
       </section>
 
       <section className="card controls-card">
@@ -837,6 +1320,45 @@ function App() {
         <p className="table-note">
           WebSocket: <code>{WS_URL}</code>
         </p>
+        <section className="session-guide" aria-label="Session onboarding and recovery">
+          <h3 className="session-guide-title">Join and rejoin guide</h3>
+          <p className="session-guide-line">
+            {!localPlayer
+              ? "1) Pick an open seat. 2) Sit down as human. 3) Wait for your turn, then use Check / Call / Fold / Raise."
+              : hasRound
+                ? `You are seated at Seat ${localSeatNumber}. When action reaches you, use the action dock (or hotkeys).`
+                : `You are seated at Seat ${localSeatNumber}. Press Start game (host) or wait for host to begin.`}
+          </p>
+          <p className="session-guide-line">
+            {isHost
+              ? "You are host: you control Start game and Auto next hand."
+              : `Host controls hand starts and auto-deal: ${hostPlayerName || "not assigned yet"}.`}
+          </p>
+          <p className="session-guide-line">
+            Seats in use:{" "}
+            {occupiedSeatNumbers.length ? occupiedSeatNumbers.join(", ") : "none"} - open:{" "}
+            {openSeatNumbers.length ? openSeatNumbers.join(", ") : "none"}.
+          </p>
+          <p className="session-guide-line">
+            Refresh/disconnect recovery: reconnect, keep the same room + name, then reclaim your seat.
+          </p>
+          <div className="session-guide-actions">
+            {quickMode ? (
+              <>
+                <button disabled={!isSocketOpen} onClick={() => quickJoin("p1", 1)}>
+                  Rejoin as P1 (Seat 1)
+                </button>
+                <button disabled={!isSocketOpen} onClick={() => quickJoin("p2", 2)}>
+                  Rejoin as P2 (Seat 2)
+                </button>
+              </>
+            ) : (
+              <button disabled={!isSocketOpen} onClick={onRejoinPreferredSeat}>
+                Rejoin preferred seat ({preferredRejoinSeat})
+              </button>
+            )}
+          </div>
+        </section>
 
         <div className="row quick-header">
           <span className="quick-badge">Quick test mode: room `home`, seats 1-2</span>
@@ -929,7 +1451,6 @@ function App() {
           </button>
         </div>
 
-        {lastError ? <p className="error">Last server error: {lastError}</p> : null}
       </section>
 
       {hasLastHandResult ? (

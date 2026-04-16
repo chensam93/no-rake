@@ -1,3 +1,20 @@
+/** Nudge dealer button from seat anchor toward table center (board) — reads like a live dealer puck. */
+function getDealerNudgeStyle(seatLayout) {
+  if (!seatLayout?.left || !seatLayout?.top) return undefined;
+  const left = Number.parseFloat(seatLayout.left) / 100;
+  const top = Number.parseFloat(seatLayout.top) / 100;
+  const centerX = 0.5;
+  const centerY = 0.5;
+  const dx = centerX - left;
+  const dy = centerY - top;
+  const len = Math.hypot(dx, dy);
+  if (len < 0.0001) return undefined;
+  const scalePx = 26;
+  const nx = (dx / len) * scalePx;
+  const ny = (dy / len) * scalePx;
+  return { transform: `translate(${nx.toFixed(1)}px, ${ny.toFixed(1)}px)` };
+}
+
 export default function SeatNodesLayer({
   seats,
   seatLayoutMap,
@@ -36,17 +53,7 @@ export default function SeatNodesLayer({
         const committedThisStreet = player?.committedThisStreet ?? 0;
         const stackValue = Math.max(0, Number(player?.stack ?? 0));
         const isAllIn = hasRound && !isFolded && player && stackValue <= 0;
-        const seatRoleLabel = isDealer
-          ? isSmallBlind
-            ? "D/SB"
-            : isBigBlind
-              ? "D/BB"
-              : "D"
-          : isSmallBlind
-            ? "SB"
-            : isBigBlind
-              ? "BB"
-              : null;
+        const blindRoleLabel = isSmallBlind ? "SB" : isBigBlind ? "BB" : null;
         const stackInBb = stackValue / blindUnitValue;
         const stackBbLabel =
           stackInBb >= 100 ? Math.round(stackInBb) : Math.round(stackInBb * 10) / 10;
@@ -92,30 +99,53 @@ export default function SeatNodesLayer({
                 </div>
               ) : (
                 <>
-                  <div className="seat-node-top">
-                    <div className="seat-node-markers">
-                      {isTurn ? <span className="turn-chip">ACT</span> : null}
-                      {seatRoleLabel ? <span className="position-chip">{seatRoleLabel}</span> : null}
+                  {isTurn ? <span className="seat-action-indicator" aria-label="Acting now" /> : null}
+                  <div className="seat-node-play-wrap">
+                    {isDealer ? (
+                      <div
+                        className="seat-node-dealer-slot"
+                        style={getDealerNudgeStyle(seatLayout)}
+                      >
+                        <span className="dealer-button">D</span>
+                      </div>
+                    ) : null}
+                    <div className="card-row seat-node-cards">
+                      {player.holeCards?.length ? (
+                        player.holeCards.map((card) => (
+                          <span key={`${seat}-${card}`} className={`poker-card mini-card ${cardSuitClass(card)}`}>
+                            {cardLabel(card)}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="placeholder-text">No cards</span>
+                      )}
                     </div>
+                    {blindRoleLabel ? (
+                      <div className="seat-node-markers-row">
+                        <div className="seat-node-markers">
+                          <span className="position-chip">{blindRoleLabel}</span>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
-                  <div className="card-row seat-node-cards">
-                    {player.holeCards?.length ? (
-                      player.holeCards.map((card) => (
-                        <span key={`${seat}-${card}`} className={`poker-card mini-card ${cardSuitClass(card)}`}>
-                          {cardLabel(card)}
+                  <div className="seat-node-meta">
+                    <div
+                      className={`seat-stack-badge ${showBbStacks ? "seat-stack-badge-bb-mode" : "seat-stack-badge-chips-mode"}`}
+                    >
+                      {showBbStacks ? (
+                        <span className="seat-stack-primary">
+                          <span className="seat-stack-value">{stackBbLabel}</span>
+                          <span className="seat-stack-unit">BB</span>
                         </span>
-                      ))
-                    ) : (
-                      <span className="placeholder-text">No cards</span>
-                    )}
+                      ) : (
+                        <span className="seat-stack-primary">
+                          <span className="seat-stack-value">{formatChipCount(stackValue)}</span>
+                          <span className="seat-stack-unit seat-stack-unit-chips">chips</span>
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="seat-node-name">{player.playerName}</div>
-                  <div className="seat-node-meta">
-                    <div className="seat-stack-badge">
-                      <span className="seat-stack-main">{formatChipCount(stackValue)}</span>
-                      {showBbStacks ? <span className="seat-stack-bb">{stackBbLabel} bb</span> : null}
-                    </div>
-                  </div>
                 </>
               )}
             </div>

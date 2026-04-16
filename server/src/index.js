@@ -267,6 +267,7 @@ function getOrCreateRoom(roomId) {
         dealerSeatNumber: null,
         autoDealEnabled: true,
         autoDealDelayMs: 1800,
+        manualStepMode: false,
       },
       hand: {
         inProgress: false,
@@ -615,6 +616,7 @@ function maybeScheduleAutoStart(room, reason = null) {
   if (reason && !autoDealReasons.has(reason)) return;
   if (room.hand.inProgress) return;
   if (!room.table.autoDealEnabled) return;
+  if (room.table.manualStepMode) return;
   if (getSeatedPlayers(room).length < 2) return;
 
   const delayMs = room.table.autoDealDelayMs ?? 1800;
@@ -624,6 +626,7 @@ function maybeScheduleAutoStart(room, reason = null) {
     if (!rooms.has(room.id)) return;
     if (room.hand.inProgress) return;
     if (!room.table.autoDealEnabled) return;
+    if (room.table.manualStepMode) return;
 
     const result = startRound(room);
     if (!result.ok) return;
@@ -676,6 +679,7 @@ function publishRoomState(roomId) {
       bigBlind: room.table.bigBlind,
       autoDealEnabled: room.table.autoDealEnabled,
       autoDealDelayMs: room.table.autoDealDelayMs,
+      manualStepMode: room.table.manualStepMode,
       hostPlayerName: getHostPlayerName(room),
     },
     players: getSortedPlayers(room),
@@ -1091,6 +1095,118 @@ app.get("/ws", { websocket: true }, (socket) => {
       return;
     }
 
+    if (parsed.type === "set_manual_step_mode") {
+      if (!session.roomId) {
+        sendJson(socket, { type: "error", message: "join_room before set_manual_step_mode" });
+        return;
+      }
+
+      const room = rooms.get(session.roomId);
+      if (!room) {
+        sendJson(socket, { type: "error", message: "room not found" });
+        return;
+      }
+
+      if (room.hostSocket !== socket) {
+        sendJson(socket, {
+          type: "error",
+          message: "only host can change manual step mode",
+        });
+        return;
+      }
+
+      room.table.manualStepMode = Boolean(parsed.enabled);
+      if (room.table.manualStepMode) {
+        clearAutoStartTimer(room);
+      } else if (room.table.autoDealEnabled) {
+        maybeScheduleAutoStart(room);
+      }
+
+      sendJson(socket, {
+        type: "manual_step_mode_updated",
+        roomId: session.roomId,
+        enabled: room.table.manualStepMode,
+      });
+      publishRoomState(session.roomId);
+      return;
+    }
+
+    if (parsed.type === "step_progress") {
+      if (!session.roomId) {
+        sendJson(socket, { type: "error", message: "join_room before step_progress" });
+        return;
+      }
+
+      const room = rooms.get(session.roomId);
+      if (!room) {
+        sendJson(socket, { type: "error", message: "room not found" });
+        return;
+      }
+
+      if (room.hostSocket !== socket) {
+        sendJson(socket, { type: "error", message: "only host can step progression" });
+        return;
+      }
+
+      if (!room.table.manualStepMode) {
+        sendJson(socket, { type: "error", message: "manual step mode is not enabled" });
+        return;
+      }
+
+      if (room.hand.inProgress) {
+        if (room.hand.pendingSeatNumbers.size > 0) {
+          sendJson(socket, {
+            type: "error",
+            message: "cannot progress while player actions are still pending",
+          });
+          return;
+        }
+
+        const progression = progressRoundWhenNoPending(room);
+        for (const transition of progression.streetEvents) {
+          sendJson(socket, {
+            type: "street_advanced",
+            roomId: session.roomId,
+            street: transition.street,
+            boardCards: transition.boardCards,
+            turnSeatNumber: transition.turnSeatNumber,
+          });
+        }
+
+        if (progression.ended) {
+          sendJson(socket, {
+            type: "round_ended",
+            roomId: session.roomId,
+            winnerSeatNumber: progression.endResult.winnerSeatNumber,
+            winnerSeatNumbers: progression.endResult.winnerSeatNumbers,
+            payouts: progression.endResult.payouts,
+            potBreakdown: progression.endResult.potBreakdown,
+            showdown: progression.endResult.showdown,
+            reason: progression.endResult.reason,
+          });
+        }
+
+        publishRoomState(session.roomId);
+        return;
+      }
+
+      const result = startRound(room);
+      if (!result.ok) {
+        sendJson(socket, { type: "error", message: result.message });
+        return;
+      }
+
+      sendJson(socket, {
+        type: "round_started",
+        roomId: session.roomId,
+        turnSeatNumber: result.turnSeatNumber,
+        street: result.street,
+        auto: false,
+      });
+      publishRoomState(session.roomId);
+      return;
+    }
+
     if (parsed.type === "sit_down") {
       if (!session.roomId || !session.playerName) {
         sendJson(socket, {
@@ -1397,6 +1513,20 @@ app.get("/ws", { websocket: true }, (socket) => {
       }
 
       if (room.hand.pendingSeatNumbers.size === 0) {
+        if (room.table.manualStepMode) {
+          room.hand.turnSeatNumber = null;
+          sendJson(socket, {
+            type: "action_applied",
+            roomId: session.roomId,
+            actionType,
+            amountCommitted,
+            nextTurnSeatNumber: null,
+            note: `${note || "ok"} manual_step_wait`,
+          });
+          publishRoomState(session.roomId);
+          return;
+        }
+
         const progression = progressRoundWhenNoPending(room);
         for (const transition of progression.streetEvents) {
           sendJson(socket, {

@@ -1,6 +1,4 @@
 export default function ActionControlsPanel({
-  canActNow,
-  hasRound,
   canCheckAction,
   canCallAction,
   canFoldAction,
@@ -11,18 +9,22 @@ export default function ActionControlsPanel({
   localToCall,
   raiseMinTarget,
   raiseMaxTarget,
-  raiseStep,
   localCommittedThisStreet,
   showPresetButtons,
   betPresetPercentages,
   showRaiseSlider,
+  preflopRaiseUi,
+  preflopRaiseTarget,
+  preflopSizingHint,
   onAmountChange,
+  onAmountInputKeyDown,
   onCheck,
   onCall,
   onFold,
-  onBet,
   onRaiseClick,
   onTogglePresets,
+  onOpenRaiseFineTune,
+  onEditPreflopSizing,
   onApplyPreset,
   onEditPreset,
   onRaiseNudge,
@@ -30,8 +32,11 @@ export default function ActionControlsPanel({
   onSetPotRaise,
   onSetMinRaise,
   onSetAllIn,
+  raiseSliderPosition,
+  raiseQuarterAmount,
+  raiseMiddleAmount,
+  raiseThreeQuarterAmount,
   onRaiseSliderChange,
-  onSubmitRaise,
   onCloseRaiseSlider,
 }) {
   return (
@@ -49,27 +54,74 @@ export default function ActionControlsPanel({
             </button>
           ) : null}
           {canFoldAction ? <button onClick={onFold}>Fold</button> : null}
-          {showAmountControls ? (
+          {canRaiseAction && !preflopRaiseUi ? (
             <input
               className="table-action-amount"
               type="number"
               min={1}
               value={amount}
               onChange={(event) => onAmountChange(Number(event.target.value || 1))}
+              onKeyDown={onAmountInputKeyDown}
             />
           ) : null}
-          {canBetAction ? <button onClick={onBet}>Bet {amount}</button> : null}
-          {canRaiseAction ? (
-            <button onClick={onRaiseClick}>
+          {canBetAction ? (
+            <button className="action-primary-button" onClick={onTogglePresets}>
+              {showPresetButtons ? "Cancel bet" : "Bet"}
+            </button>
+          ) : null}
+          {canRaiseAction && preflopRaiseUi ? (
+            <div className="preflop-raise-group">
+              <button
+                type="button"
+                className={`action-raise-button action-primary-button ${showRaiseSlider ? "action-raise-confirm" : ""}`}
+                onClick={onRaiseClick}
+                aria-label={
+                  showRaiseSlider
+                    ? `Confirm raise to ${Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}`
+                    : `Raise to ${preflopRaiseTarget} (${preflopSizingHint})`
+                }
+              >
+                {showRaiseSlider
+                  ? `Raise to ${Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}`
+                  : `Raise to ${preflopRaiseTarget}`}
+              </button>
+              {!showRaiseSlider ? (
+                <button
+                  type="button"
+                  className="preflop-preset-edit"
+                  title="Edit open-raise size (× big blind). Typical online open is about 2–3×."
+                  aria-label="Edit preflop open-raise multiplier"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onEditPreflopSizing();
+                  }}
+                >
+                  ✎
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {canRaiseAction && !preflopRaiseUi ? (
+            <button
+              className={`action-raise-button ${showRaiseSlider ? "action-primary-button action-raise-confirm" : ""}`}
+              onClick={onRaiseClick}
+              aria-label={showRaiseSlider ? `Confirm raise to ${amount}` : `Raise to ${amount}`}
+            >
               Raise to {Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}
             </button>
           ) : null}
-          {showAmountControls ? (
-            <button onClick={onTogglePresets}>Presets {showPresetButtons ? "▲" : "▼"}</button>
+          {canRaiseAction ? (
+            <button
+              className="action-sizes-button"
+              type="button"
+              onClick={preflopRaiseUi ? onOpenRaiseFineTune : onTogglePresets}
+            >
+              {preflopRaiseUi ? "More" : `Sizes ${showPresetButtons ? "▲" : "▼"}`}
+            </button>
           ) : null}
         </div>
       ) : null}
-      {showAmountControls && showPresetButtons ? (
+      {(canBetAction || canRaiseAction) && showPresetButtons && !preflopRaiseUi ? (
         <div className="table-action-presets">
           {betPresetPercentages.length > 0 ? (
             betPresetPercentages.map((percent, index) => (
@@ -97,12 +149,11 @@ export default function ActionControlsPanel({
           )}
         </div>
       ) : null}
-      {!canActNow && hasRound ? <div className="table-dev-note">Waiting for your turn...</div> : null}
       {showRaiseSlider ? (
         <div className="raise-slider-panel">
           <div className="raise-slider-header">
-            <span>Raise to: {amount}</span>
-            <span>+{Math.max(0, amount - localCommittedThisStreet)} this action</span>
+            <span>Raise {amount}</span>
+            <span>+{Math.max(0, amount - localCommittedThisStreet)}</span>
           </div>
           <div className="raise-slider-stepper">
             <button disabled={!canRaiseAction} onClick={() => onRaiseNudge(-1)}>
@@ -130,29 +181,28 @@ export default function ActionControlsPanel({
           <input
             className="raise-slider"
             type="range"
-            min={raiseMinTarget}
-            max={raiseMaxTarget}
-            step={raiseStep}
-            value={Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}
+            min={0}
+            max={100}
+            step={1}
+            value={Math.max(0, Math.min(100, Math.round(raiseSliderPosition ?? 0)))}
             list="raise-target-marks"
             onChange={(event) => onRaiseSliderChange(event.target.value)}
           />
           <datalist id="raise-target-marks">
-            <option value={raiseMinTarget} />
-            <option value={Math.round((raiseMinTarget * 2 + raiseMaxTarget) / 3)} />
-            <option value={Math.round((raiseMinTarget + raiseMaxTarget * 2) / 3)} />
-            <option value={raiseMaxTarget} />
+            <option value={0} />
+            <option value={25} />
+            <option value={50} />
+            <option value={75} />
+            <option value={100} />
           </datalist>
           <div className="raise-slider-marks">
             <span>{raiseMinTarget} min</span>
-            <span>step {raiseStep}</span>
-            <span>{Math.round((raiseMinTarget + raiseMaxTarget) / 2)}</span>
+            <span>{raiseQuarterAmount}</span>
+            <span>{raiseMiddleAmount}</span>
+            <span>{raiseThreeQuarterAmount}</span>
             <span>{raiseMaxTarget} max</span>
           </div>
           <div className="raise-slider-actions">
-            <button disabled={!canRaiseAction} onClick={onSubmitRaise}>
-              Raise to {amount}
-            </button>
             <button onClick={onCloseRaiseSlider}>Close</button>
           </div>
         </div>
