@@ -68,6 +68,13 @@ Current hand/street behavior:
 - combined server rules checks: `npm run test:rules -w server`
 - client bot-decision logic check: `npm run test:bot-decision -w client`
 
+## Test suite
+
+- full suite (server + client): `npm test`
+- faster suite (skip client lint): `npm run test:quick`
+- server checks only: `npm run test:server`
+- client checks only: `npm run test:client`
+
 ## Secret scanning
 
 - local pre-commit hook lives at `.githooks/pre-commit`

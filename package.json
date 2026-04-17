@@ -9,7 +9,11 @@
   "scripts": {
     "dev": "concurrently -n server,client -c blue,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
     "dev:server": "npm run dev -w server",
-    "dev:client": "npm run dev -w client"
+    "dev:client": "npm run dev -w client",
+    "test": "node scripts/test-suite.mjs",
+    "test:quick": "node scripts/test-suite.mjs --quick",
+    "test:server": "node scripts/test-suite.mjs --server-only",
+    "test:client": "node scripts/test-suite.mjs --client-only"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
