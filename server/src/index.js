@@ -18,6 +18,7 @@ import {
   getSortedPlayers,
 } from "./services/roomQueries.js";
 import { createRoundLifecycle } from "./services/roundLifecycle.js";
+import { createServerBotService } from "./services/serverBotService.js";
 import { createShowdownService } from "./services/showdownService.js";
 import { publishRoomState as publishRoomStateFromModule } from "./serializers/publishRoomState.js";
 import { createMessageRouter } from "./ws/messageRouter.js";
@@ -35,11 +36,13 @@ const publishRoomState = (roomId) =>
   publishRoomStateFromModule(roomId, rooms, sendJson, getSortedPlayers);
 
 let startRoundRef = null;
+let runInternalPlayerActionRef = null;
 const maybeScheduleWithContext = (room, reason = null) =>
   maybeScheduleAutoStart(room, reason, {
     rooms,
     getSeatedPlayers,
     startRound: (targetRoom) => startRoundRef(targetRoom),
+    maybeScheduleServerBotAction: (targetRoom) => serverBotService.maybeScheduleBotAction(targetRoom),
     sendJson,
     publishRoomState,
   });
@@ -68,6 +71,20 @@ const roundLifecycle = createRoundLifecycle({
 });
 startRoundRef = roundLifecycle.startRound;
 
+const serverBotService = createServerBotService({
+  MAX_SEATS,
+  STARTING_STACK,
+  rooms,
+  evaluateBestHand: evaluateBestHandFromModule,
+  getPlayerBySeatNumber,
+  maybeResolveHandAfterMembershipChange: roundLifecycle.maybeResolveHandAfterMembershipChange,
+  runInternalPlayerAction: (socket, session, parsed) => {
+    if (typeof runInternalPlayerActionRef === "function") {
+      runInternalPlayerActionRef(socket, session, parsed);
+    }
+  },
+});
+
 const router = createMessageRouter({
   MAX_SEATS,
   STARTING_STACK,
@@ -80,16 +97,25 @@ const router = createMessageRouter({
   maybeEndRoundOnFold: roundLifecycle.maybeEndRoundOnFold,
   maybeResolveHandAfterMembershipChange: roundLifecycle.maybeResolveHandAfterMembershipChange,
   maybeScheduleAutoStart: maybeScheduleWithContext,
+  maybeScheduleServerBotAction: serverBotService.maybeScheduleBotAction,
   progressRoundWhenNoPending: roundLifecycle.progressRoundWhenNoPending,
   publishRoomState,
+  runServerBotStep: serverBotService.runBotStep,
+  setServerBotSeat: serverBotService.setBotSeat,
+  clearServerBotSeat: serverBotService.clearBotSeat,
+  setServerBotProfile: serverBotService.setBotProfile,
+  setServerBotSeed: serverBotService.setBotSeed,
+  setServerBotDelay: serverBotService.setBotDelay,
   removeSocketFromRoom: (roomId, socket) =>
     removeSocketFromRoom(roomId, socket, {
       maybeResolveHandAfterMembershipChange: roundLifecycle.maybeResolveHandAfterMembershipChange,
       clearAutoStartTimer,
+      clearServerBotTimer: serverBotService.clearBotTimer,
     }),
   sendJson,
   startRound: roundLifecycle.startRound,
 });
+runInternalPlayerActionRef = router.runInternalPlayerAction;
 
 function renderSmokePage() {
   return `<!doctype html>

@@ -4,6 +4,19 @@ export function getHostPlayerName(room) {
   return hostPlayer?.playerName ?? null;
 }
 
+function buildServerBotPayload(room) {
+  const serverBot = room.serverBot ?? {};
+  const seatNumber = Number.isInteger(serverBot.seatNumber) ? serverBot.seatNumber : null;
+  return {
+    isActive: seatNumber !== null,
+    seatNumber,
+    profile: typeof serverBot.profile === "string" ? serverBot.profile : "tag",
+    seed: Number.isInteger(serverBot.seed) ? serverBot.seed : 1337,
+    actingDelayMs: Number.isInteger(serverBot.actingDelayMs) ? serverBot.actingDelayMs : 320,
+    supportedProfiles: ["nit", "tag", "lag", "maniac"],
+  };
+}
+
 export function publishRoomState(roomId, rooms, sendJson, getSortedPlayers) {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -18,6 +31,7 @@ export function publishRoomState(roomId, rooms, sendJson, getSortedPlayers) {
       autoDealDelayMs: room.table.autoDealDelayMs,
       manualStepMode: room.table.manualStepMode,
       hostPlayerName: getHostPlayerName(room),
+      serverBot: buildServerBotPayload(room),
     },
     players: getSortedPlayers(room),
     round: {

@@ -7,9 +7,8 @@ import TableCenterBoard from "./components/TableCenterBoard.jsx";
 import SeatNodesLayer from "./components/SeatNodesLayer.jsx";
 import { useTableHotkeys } from "./hooks/useTableHotkeys.js";
 import { useSocketSenders } from "./hooks/useSocketSenders.js";
-import { computeBotDecision } from "./lib/botDecision.js";
 import { getRecommendedPreflopRaiseTo } from "./lib/preflopSizing.js";
-import { buildPlayersBySeat, deriveLocalPlayer, deriveSeatOccupancy } from "./lib/tableSelectors.js";
+import { buildPlayersBySeat, deriveLocalPlayer } from "./lib/tableSelectors.js";
 
 const DEFAULT_WS_URL = "ws://127.0.0.1:3000/ws";
 const WS_URL = import.meta.env.VITE_WS_URL || DEFAULT_WS_URL;
@@ -44,14 +43,14 @@ function readStoredSfxEnabled() {
 /* Percent positions on felt; edge seats nudged inward so spacing to oval rim is more even */
 const SEAT_LAYOUT = {
   1: { top: "88%", left: "50%" },
-  2: { top: "82%", left: "69%" },
-  3: { top: "65%", left: "85%" },
-  4: { top: "38%", left: "86%" },
-  5: { top: "18%", left: "68%" },
-  6: { top: "11%", left: "50%" },
-  7: { top: "18%", left: "32%" },
-  8: { top: "38%", left: "14%" },
-  9: { top: "65%", left: "15%" },
+  2: { top: "79%", left: "74%" },
+  3: { top: "58%", left: "86%" },
+  4: { top: "34%", left: "82%" },
+  5: { top: "16%", left: "62%" },
+  6: { top: "16%", left: "38%" },
+  7: { top: "34%", left: "18%" },
+  8: { top: "58%", left: "14%" },
+  9: { top: "79%", left: "26%" },
 };
 const BET_MARKER_SEAT_TWEAKS = {
   1: { top: -1.8, left: 2.7 },
@@ -73,14 +72,6 @@ function getBetMarkerPosition(seatNumber) {
   const top = baseTop + tweak.top;
   const left = baseLeft + tweak.left;
   return { top: `${top.toFixed(2)}%`, left: `${left.toFixed(2)}%` };
-}
-
-function prettyJson(value) {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 }
 
 function timestamp() {
@@ -199,12 +190,8 @@ function getRaiseSliderPositionFromAmount(amount, minTarget, maxTarget) {
 function App() {
   const wsRef = useRef(null);
   const botWsRef = useRef(null);
-  const botLastActionKeyRef = useRef(null);
-  const botSeatRef = useRef(null);
-  const botAutoActionTimeoutRef = useRef(null);
-  const botPendingActionKeyRef = useRef(null);
-  const botActionModeRef = useRef("auto");
   const audioContextRef = useRef(null);
+  const eventsRef = useRef([]);
   const previousTurnSeatRef = useRef(null);
   const previousConnectionStateRef = useRef(null);
   const previousLastEndReasonRef = useRef(null);
@@ -212,15 +199,15 @@ function App() {
   const [connectionState, setConnectionState] = useState("connecting");
   const [botState, setBotState] = useState("off");
   const [botSeatNumber, setBotSeatNumber] = useState(null);
+  const [botProfile, setBotProfile] = useState("tag");
   const [openSeatMenuSeat, setOpenSeatMenuSeat] = useState(null);
-  const [events, setEvents] = useState([]);
   const [roomId, setRoomId] = useState("home");
   const [playerName, setPlayerName] = useState("player");
   const [seatNumber, setSeatNumber] = useState(1);
   const [amount, setAmount] = useState(40);
   const [showRaiseSlider, setShowRaiseSlider] = useState(false);
   const [betPresetText, setBetPresetText] = useState(DEFAULT_BET_PRESET_TEXT);
-  const [quickMode, setQuickMode] = useState(DEFAULT_QUICK_MODE);
+  const quickMode = DEFAULT_QUICK_MODE;
   const [botActionMode, setBotActionMode] = useState("auto");
   const [uiMotionPaused, setUiMotionPaused] = useState(false);
   const [uiDensity, setUiDensity] = useState("compact");
@@ -229,14 +216,13 @@ function App() {
   const [showHandLog, setShowHandLog] = useState(false);
   const [showPresetButtons, setShowPresetButtons] = useState(false);
   const [showTopGameMenu, setShowTopGameMenu] = useState(false);
-  const [preflopOpenBbMultiple, setPreflopOpenBbMultiple] = useState(readStoredPreflopOpenBbMultiple);
+  const [preflopOpenBbMultiple] = useState(readStoredPreflopOpenBbMultiple);
   const [showDevTools, setShowDevTools] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(readStoredSfxEnabled);
   const [roomState, setRoomState] = useState(null);
   const [lastServerError, setLastServerError] = useState(null);
   const [sendBlockedNotice, setSendBlockedNotice] = useState(null);
   const [mainSocketEpoch, setMainSocketEpoch] = useState(0);
-  const [botLastActionKey, setBotLastActionKey] = useState(null);
   const isSocketOpen = connectionState === "open";
   const isBotOpen = botState === "open";
   const connectionStatusLabel =
@@ -250,7 +236,7 @@ function App() {
 
   const appendEvent = (line) => {
     const stamped = `[${timestamp()}] ${line}`;
-    setEvents((prev) => [...prev.slice(-79), stamped]);
+    eventsRef.current = [...eventsRef.current.slice(-79), stamped];
   };
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
@@ -325,71 +311,18 @@ function App() {
     setSendBlockedNotice("Not connected — your action was not sent.");
     playUiCue("error");
   }, [playUiCue]);
-  const { sendJson, sendBotJson } = useSocketSenders(wsRef, botWsRef, appendEvent, onMainSendBlocked);
-
-  const clearPendingBotAutoAction = () => {
-    if (botAutoActionTimeoutRef.current !== null) {
-      clearTimeout(botAutoActionTimeoutRef.current);
-      botAutoActionTimeoutRef.current = null;
-    }
-    botPendingActionKeyRef.current = null;
-  };
+  const { sendJson } = useSocketSenders(wsRef, botWsRef, appendEvent, onMainSendBlocked);
 
   const stopBot = () => {
-    const ws = botWsRef.current;
-    clearPendingBotAutoAction();
-    if (ws) {
-      ws.close();
-      botWsRef.current = null;
+    if (!isSocketOpen) {
+      appendEvent("[bot] stop ignored: websocket not open");
+      return;
     }
-    botLastActionKeyRef.current = null;
-    setBotLastActionKey(null);
-    botSeatRef.current = null;
-    setBotSeatNumber(null);
-    setBotState("off");
-  };
-
-  const getBotDecision = (roomStatePayload) => {
-    return computeBotDecision(
-      roomStatePayload,
-      botSeatRef.current,
-      botLastActionKeyRef.current,
-    );
-  };
-
-  const runBotDecision = (decision, delayMs = 0) => {
-    if (!decision) return false;
-    if (botLastActionKeyRef.current === decision.actionKey) return false;
-    if (botPendingActionKeyRef.current === decision.actionKey) return false;
-
-    const sendAction = () => {
-      if (!botWsRef.current || botWsRef.current.readyState !== WebSocket.OPEN) return;
-      botLastActionKeyRef.current = decision.actionKey;
-      setBotLastActionKey(decision.actionKey);
-      sendBotJson({ type: "player_action", actionType: decision.actionType }, decision.label);
-    };
-
-    if (delayMs <= 0) {
-      sendAction();
-      return true;
+    if (!botSeatNumber) {
+      appendEvent("[bot] no active bot seat");
+      return;
     }
-
-    clearPendingBotAutoAction();
-    botPendingActionKeyRef.current = decision.actionKey;
-    botAutoActionTimeoutRef.current = setTimeout(() => {
-      if (botPendingActionKeyRef.current !== decision.actionKey) return;
-      if (botActionModeRef.current !== "auto") return;
-      sendAction();
-      botAutoActionTimeoutRef.current = null;
-      botPendingActionKeyRef.current = null;
-    }, delayMs);
-    return true;
-  };
-
-  const maybeRunBotAction = (roomStatePayload) => {
-    if (botActionMode !== "auto") return;
-    const decision = getBotDecision(roomStatePayload);
-    runBotDecision(decision, 350);
+    sendJson({ type: "set_server_bot", enabled: false, seatNumber: botSeatNumber }, "set_server_bot:disable");
   };
 
   const runBotStep = () => {
@@ -397,43 +330,12 @@ function App() {
       appendEvent("[bot] step ignored: switch bot mode to step first");
       return;
     }
-    clearPendingBotAutoAction();
-    const roundState = roomState?.round;
-    const pendingSeatNumbers = Array.isArray(roundState?.pendingSeatNumbers)
-      ? roundState.pendingSeatNumbers
-      : [];
-    const turnSeat = roundState?.turnSeatNumber;
-    const localSeatFromRoom =
-      (roomState?.players ?? []).find(
-        (candidate) => candidate.seatNumber !== null && candidate.playerName === playerName,
-      )?.seatNumber ?? null;
-    if (roundState?.inProgress && pendingSeatNumbers.length === 0) {
-      if (localSeatFromRoom !== null && turnSeat === localSeatFromRoom) {
-        appendEvent("[bot] step blocked: your action first — use Check / Call / Raise");
-        return;
-      }
-      sendJson({ type: "step_progress" }, "step_progress");
-      appendEvent("[bot] step mode: progression advanced");
-      return;
-    }
-    const decision = getBotDecision(roomState);
-    if (decision) {
-      runBotDecision(decision, 0);
-      appendEvent(`[bot] step mode action: ${decision.actionType} (toCall=${decision.toCall})`);
-      return;
-    }
-    if (roundState?.inProgress && pendingSeatNumbers.length > 0) {
-      appendEvent(`[bot] step blocked: awaiting seat ${roundState.turnSeatNumber ?? "?"} action`);
-      return;
-    }
     sendJson({ type: "step_progress" }, "step_progress");
-    appendEvent("[bot] step mode: progression advanced");
+    appendEvent("[bot] step mode: progress requested");
   };
 
   const handleBotActionModeChange = (nextMode) => {
-    clearPendingBotAutoAction();
     setBotActionMode(nextMode);
-    botActionModeRef.current = nextMode;
     appendEvent(`[bot] action mode: ${nextMode}`);
     if (isSocketOpen && roomState?.roomId) {
       sendJson(
@@ -441,68 +343,25 @@ function App() {
         "set_manual_step_mode",
       );
     }
-    if (nextMode === "auto" && roomState) {
-      maybeRunBotAction(roomState);
-    }
   };
 
-  useEffect(() => {
-    botActionModeRef.current = botActionMode;
-  }, [botActionMode]);
-
-  const startBot = (targetSeatNumber, targetRoomId = roomId) => {
+  const startBot = (targetSeatNumber) => {
     if (!Number.isInteger(targetSeatNumber) || targetSeatNumber < 1 || targetSeatNumber > 9) {
       appendEvent("[bot] invalid seat for bot");
       return;
     }
-    if (botWsRef.current && botWsRef.current.readyState === WebSocket.OPEN) return;
-
-    const botWs = new WebSocket(WS_URL);
-    botWsRef.current = botWs;
-    botSeatRef.current = targetSeatNumber;
-    setBotSeatNumber(targetSeatNumber);
-    setBotState("connecting");
-
-    botWs.onopen = () => {
-      setBotState("open");
-      appendEvent("[bot] websocket open");
-      const botName = `bot-s${targetSeatNumber}`;
-      sendBotJson(
-        { type: "join_room", roomId: targetRoomId, playerName: botName },
-        `join_room (${botName})`,
-      );
-      sendBotJson({ type: "sit_down", seatNumber: targetSeatNumber }, `sit_down (${targetSeatNumber})`);
-    };
-
-    botWs.onclose = () => {
-      if (botWsRef.current === botWs) {
-        botWsRef.current = null;
-        botLastActionKeyRef.current = null;
-        setBotState("off");
-      }
-      appendEvent("[bot] websocket closed");
-    };
-
-    botWs.onerror = () => {
-      if (botWsRef.current === botWs) {
-        setBotState("error");
-      }
-      appendEvent("[bot] websocket error");
-    };
-
-    botWs.onmessage = (event) => {
-      appendEvent(`[bot in] ${event.data}`);
-      let parsed;
-      try {
-        parsed = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-
-      if (parsed.type === "room_state") {
-        maybeRunBotAction(parsed);
-      }
-    };
+    if (!isSocketOpen) {
+      appendEvent("[bot] cannot start bot while offline");
+      return;
+    }
+    sendJson(
+      {
+        type: "set_server_bot",
+        enabled: true,
+        seatNumber: targetSeatNumber,
+      },
+      "set_server_bot:enable",
+    );
   };
 
   const quickJoin = (player, seat) => {
@@ -580,6 +439,10 @@ function App() {
 
       if (parsed.type === "room_state") {
         setRoomState(parsed);
+        const serverBot = parsed.table?.serverBot ?? {};
+        setBotState(serverBot.isActive ? "open" : "off");
+        setBotSeatNumber(Number.isInteger(serverBot.seatNumber) ? serverBot.seatNumber : null);
+        setBotProfile(typeof serverBot.profile === "string" ? serverBot.profile : "tag");
       }
 
       if (parsed.type === "error" && typeof parsed.message === "string") {
@@ -592,12 +455,10 @@ function App() {
     };
 
     return () => {
-      clearPendingBotAutoAction();
       ws.close();
       if (wsRef.current === ws) {
         wsRef.current = null;
       }
-      stopBot();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stopBot/appendEvent omitted to avoid reconnect churn
   }, [mainSocketEpoch]);
@@ -620,12 +481,13 @@ function App() {
   const seats = Array.from({ length: 9 }, (_, index) => index + 1);
   const playersBySeat = buildPlayersBySeat(roomState);
   const table = roomState?.table ?? {};
+  const serverBot = table.serverBot ?? {};
+  const supportedBotProfiles = Array.isArray(serverBot.supportedProfiles)
+    ? serverBot.supportedProfiles
+    : ["nit", "tag", "lag", "maniac"];
   const round = roomState?.round ?? {};
   const blindUnitValue = Math.max(1, Number(round.bigBlind ?? table.bigBlind ?? 20));
   const boardCards = Array.isArray(round.board) ? round.board : [];
-  const pendingSeatNumbers = Array.isArray(round.pendingSeatNumbers)
-    ? round.pendingSeatNumbers
-    : [];
   const foldedSeatNumbers = Array.isArray(round.foldedSeatNumbers)
     ? round.foldedSeatNumbers
     : [];
@@ -683,7 +545,6 @@ function App() {
       : "3× facing";
   const showAmountControls = canBetAction || canRaiseAction;
   const isHost = Boolean(playerName && table.hostPlayerName === playerName);
-  const hostPlayerName = table.hostPlayerName || null;
   const autoDealEnabled = table.autoDealEnabled !== false;
   const autoDealDelayMs = Number(table.autoDealDelayMs) || 1800;
   const betPresetPercentages = parseBetPresetPercentages(betPresetText);
@@ -741,15 +602,13 @@ function App() {
       ? [...currentStreetActions].reverse().find((action) => action.seatNumber === localSeatNumber) ?? null
       : null;
   const turnActorLabel = turnPlayer?.playerName || `Seat ${round.turnSeatNumber}`;
-  const actionStatusLabel = !hasRound
-    ? hasLastHandResult
-      ? ""
-      : "Ready"
-    : isLocalTurn
+  const actionStatusLabel = hasRound
+    ? isLocalTurn
       ? "Your turn"
       : round.turnSeatNumber
         ? `${turnActorLabel}'s turn`
-        : "Runout";
+        : "Runout"
+    : null;
   const localCanActSummary = !hasRound
     ? "No active hand"
     : isLocalTurn
@@ -757,14 +616,26 @@ function App() {
       : localPlayer
         ? "Waiting for turn"
         : "You are not seated";
+  const hasLocalActiveHand =
+    hasRound &&
+    Boolean(localPlayer?.seatNumber) &&
+    !foldedSeatNumbers.includes(localPlayer.seatNumber);
+  const shouldShowActionDock = hasLocalActiveHand || hasLastHandResult;
   const localPotOddsPercent =
     localToCall > 0
       ? Math.round((localToCall / Math.max(1, (round.pot ?? 0) + localToCall)) * 100)
       : 0;
-  const botStepDecision =
-    botActionMode === "step"
-      ? computeBotDecision(roomState, botSeatNumber, botLastActionKey)
-      : null;
+  const isBotTurn =
+    isBotOpen && Number.isInteger(botSeatNumber) && round.turnSeatNumber === botSeatNumber;
+  const botToCall =
+    isBotTurn && botSeatNumber !== null
+      ? Math.max(
+          0,
+          Number(round.currentBet ?? 0) -
+            Number(playersBySeat.get(botSeatNumber)?.committedThisStreet ?? 0),
+        )
+      : 0;
+  const botStepDecision = isBotTurn ? { actionType: "bot_turn", toCall: botToCall } : null;
   const isBotStepReady = Boolean(botStepDecision);
   const stepPendingSeatNumbers = Array.isArray(round.pendingSeatNumbers) ? round.pendingSeatNumbers : [];
   const isStepBlockedByHumanAction =
@@ -788,13 +659,6 @@ function App() {
       : isBotStepPossible
         ? "▶ Next (Space)"
         : "Not ready — wait";
-  const { occupiedSeatNumbers, openSeatNumbers } = deriveSeatOccupancy(seats, playersBySeat);
-  const preferredRejoinSeat = Math.max(1, Math.min(9, Number(seatNumber) || 1));
-  const onRejoinPreferredSeat = () => {
-    joinLocalSeat(preferredRejoinSeat);
-    setOpenSeatMenuSeat(null);
-  };
-
   useEffect(() => {
     if (!hasRound) {
       previousTurnSeatRef.current = null;
@@ -836,33 +700,6 @@ function App() {
       );
       playUiCue("action");
       setShowPresetButtons(false);
-    }
-  };
-
-  const handlePreflopFineTuneOpen = () => {
-    if (!preflopRaiseUi || preflopRaiseTarget === null) return;
-    setAmount(preflopRaiseTarget);
-    setShowRaiseSlider(true);
-    setShowPresetButtons(false);
-  };
-
-  const editPreflopOpenBbMultiple = () => {
-    const raw = window.prompt(
-      "Open-raise size: multiple of the big blind (typical online default is about 2.5–3×).",
-      String(preflopOpenBbMultiple),
-    );
-    if (raw === null) return;
-    const next = Number(String(raw).trim());
-    if (!Number.isFinite(next) || next < 1.5 || next > 6) {
-      appendEvent("[local] preflop open multiplier ignored: use 1.5–6");
-      return;
-    }
-    const rounded = Math.round(next * 20) / 20;
-    setPreflopOpenBbMultiple(rounded);
-    try {
-      localStorage.setItem(PREFLOP_OPEN_BB_KEY, String(rounded));
-    } catch {
-      // ignore
     }
   };
 
@@ -996,6 +833,10 @@ function App() {
     currentPresets[index] = normalized;
     setBetPresetText(currentPresets.join(","));
   };
+  const getBotDecision = () =>
+    botActionMode === "step" && isBotTurn
+      ? { actionType: "bot_turn", toCall: botToCall }
+      : null;
 
   useTableHotkeys({
     botActionMode,
@@ -1098,7 +939,10 @@ function App() {
               <span className={`role-badge ${isHost ? "role-host" : "role-player"}`}>
                 {isHost ? "Role: Host" : "Role: Player"}
               </span>
-              <span className={`bot-badge bot-${botState}`}>Bot: {botState}</span>
+              <span className={`bot-badge bot-${botState}`}>
+                Bot: {botState}
+                {isBotOpen ? ` (${botProfile})` : ""}
+              </span>
             </div>
             <div className="top-game-menu">
               <button
@@ -1189,7 +1033,8 @@ function App() {
           </div>
         </div>
 
-        <div className="table-hud-row">
+        <div className={`table-hud-row ${shouldShowActionDock ? "" : "table-hud-row-dev-only"}`}>
+          {shouldShowActionDock ? (
           <aside className="table-action-corner">
             <div className="table-action-dock" role="region" aria-label="Table actions">
             <HandStatusPanel
@@ -1213,10 +1058,6 @@ function App() {
               localPotOddsPercent={localPotOddsPercent}
               heroLastActionLabel={heroLastAction ? formatActionType(heroLastAction.actionType) : "-"}
             />
-            <p className="table-keyboard-hints" aria-live="polite">
-              <span className="sr-only">Keyboard shortcuts when it is your turn: </span>
-              Space or C check · F fold · L call · R raise · B toggle bet presets
-            </p>
             <ActionControlsPanel
               canActNow={canActNow}
               hasRound={hasRound}
@@ -1244,8 +1085,6 @@ function App() {
               onFold={submitFold}
               onRaiseClick={handleRaiseClick}
               onTogglePresets={() => setShowPresetButtons((previous) => !previous)}
-              onOpenRaiseFineTune={handlePreflopFineTuneOpen}
-              onEditPreflopSizing={editPreflopOpenBbMultiple}
               onApplyPreset={applyBetPreset}
               onEditPreset={editBetPresetAtIndex}
               onRaiseNudge={handleRaiseNudge}
@@ -1262,6 +1101,7 @@ function App() {
             />
             </div>
           </aside>
+          ) : null}
 
           <aside className="table-dev-corner">
             <div className="table-hand-log-corner">
@@ -1349,13 +1189,33 @@ function App() {
                 {!isBotOpen
                   ? "No bot connected. Click an open seat and choose Sit as bot."
                   : botActionMode === "auto"
-                    ? "Bot mode: auto-play on turn"
+                    ? `Bot mode: auto-play on turn (${botProfile})`
                     : isBotStepReady
-                        ? `Step ready: ${botStepDecision.actionType} (${botStepDecision.toCall} toCall) — press Go next action`
+                        ? `Step ready: bot turn (${botStepDecision.toCall} toCall) — press Go next action`
                         : isStepBlockedByHumanAction
                           ? `Step blocked: seat ${round.turnSeatNumber} must act first`
                           : "Step mode: no bot action pending. Press Go next action to advance street/hand."}
               </span>
+            </div>
+            <div className="table-dev-row">
+              {supportedBotProfiles.map((profile) => (
+                <button
+                  key={`bot-profile-${profile}`}
+                  className={`bot-mode-button ${botProfile === profile ? "bot-mode-button-active" : ""}`}
+                  disabled={!isBotOpen}
+                  onClick={() =>
+                    sendJson(
+                      {
+                        type: "set_server_bot_profile",
+                        profile,
+                      },
+                      "set_server_bot_profile",
+                    )
+                  }
+                >
+                  {profile.toUpperCase()}
+                </button>
+              ))}
             </div>
             <div className="table-dev-row">
               <button
@@ -1416,143 +1276,6 @@ function App() {
         </div>
       </section>
 
-      <section className="card controls-card">
-        <h2>Table Controls</h2>
-        <p className="table-note">
-          WebSocket: <code>{WS_URL}</code>
-        </p>
-        <section className="session-guide" aria-label="Session onboarding and recovery">
-          <h3 className="session-guide-title">Join and rejoin guide</h3>
-          <p className="session-guide-line">
-            {!localPlayer
-              ? "1) Pick an open seat. 2) Sit down as human. 3) Wait for your turn, then use Check / Call / Fold / Raise."
-              : hasRound
-                ? `You are seated at Seat ${localSeatNumber}. When action reaches you, use the action dock (or hotkeys).`
-                : `You are seated at Seat ${localSeatNumber}. Press Start game (host) or wait for host to begin.`}
-          </p>
-          <p className="session-guide-line">
-            {isHost
-              ? "You are host: you control Start game and Auto next hand."
-              : `Host controls hand starts and auto-deal: ${hostPlayerName || "not assigned yet"}.`}
-          </p>
-          <p className="session-guide-line">
-            Seats in use:{" "}
-            {occupiedSeatNumbers.length ? occupiedSeatNumbers.join(", ") : "none"} - open:{" "}
-            {openSeatNumbers.length ? openSeatNumbers.join(", ") : "none"}.
-          </p>
-          <p className="session-guide-line">
-            Refresh/disconnect recovery: reconnect, keep the same room + name, then reclaim your seat.
-          </p>
-          <div className="session-guide-actions">
-            {quickMode ? (
-              <>
-                <button disabled={!isSocketOpen} onClick={() => quickJoin("p1", 1)}>
-                  Rejoin as P1 (Seat 1)
-                </button>
-                <button disabled={!isSocketOpen} onClick={() => quickJoin("p2", 2)}>
-                  Rejoin as P2 (Seat 2)
-                </button>
-              </>
-            ) : (
-              <button disabled={!isSocketOpen} onClick={onRejoinPreferredSeat}>
-                Rejoin preferred seat ({preferredRejoinSeat})
-              </button>
-            )}
-          </div>
-        </section>
-
-        <div className="row quick-header">
-          <span className="quick-badge">Quick test mode: room `home`, seats 1-2</span>
-          <label className="quick-toggle">
-            <input
-              type="checkbox"
-              checked={quickMode}
-              onChange={(event) => setQuickMode(event.target.checked)}
-            />
-            Use quick mode
-          </label>
-        </div>
-
-        {quickMode ? (
-          <div className="row buttons">
-            <button disabled={!isSocketOpen} onClick={() => quickJoin("p1", 1)}>
-              Join as P1 (Seat 1)
-            </button>
-            <button disabled={!isSocketOpen} onClick={() => quickJoin("p2", 2)}>
-              Join as P2 (Seat 2)
-            </button>
-            <span className="table-dev-note">Click an open seat for bot options</span>
-            <span className={`bot-badge bot-${botState}`}>Bot: {botState}</span>
-          </div>
-        ) : null}
-
-        {!quickMode ? (
-        <div className="row">
-          <label>
-            Room
-            <input value={roomId} onChange={(event) => setRoomId(event.target.value)} />
-          </label>
-          <label>
-            Name
-            <input
-              value={playerName}
-              onChange={(event) => setPlayerName(event.target.value)}
-            />
-          </label>
-          <label>
-            Seat
-            <input
-              type="number"
-              min={1}
-              max={9}
-              value={seatNumber}
-              onChange={(event) => setSeatNumber(Number(event.target.value || 1))}
-            />
-          </label>
-          <label>
-            Amount
-            <input
-              type="number"
-              min={1}
-              value={amount}
-              onChange={(event) => setAmount(Number(event.target.value || 1))}
-            />
-          </label>
-        </div>
-        ) : null}
-
-        <div className="row buttons action-buttons">
-          {!quickMode ? (
-            <>
-              <button
-                disabled={!isSocketOpen}
-                onClick={() => sendJson({ type: "join_room", roomId, playerName }, "join_room")}
-              >
-                Join room
-              </button>
-              <button
-                disabled={!isSocketOpen}
-                onClick={() => sendJson({ type: "sit_down", seatNumber }, "sit_down")}
-              >
-                Sit down
-              </button>
-            </>
-          ) : null}
-          <button
-            disabled={!isSocketOpen}
-            onClick={() => {
-              const ws = wsRef.current;
-              if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send("ping-" + Date.now());
-                appendEvent("[out] ping-*");
-              }
-            }}
-          >
-            Ping (text)
-          </button>
-        </div>
-
-      </section>
 
       {hasLastHandResult ? (
         <section className="card hand-result-card">
@@ -1607,49 +1330,6 @@ function App() {
         </section>
       ) : null}
 
-      <details className="card debug-card">
-        <summary>Debug panels</summary>
-        <section className="state-grid">
-          <div>
-            <h2>Round</h2>
-            {roomState?.round ? (
-              <ul>
-                <li>inProgress: {String(round.inProgress)}</li>
-                <li>street: {String(round.street)}</li>
-                <li>board: {boardCards.join(" ") || "none"}</li>
-                <li>pot: {round.pot ?? "-"}</li>
-                <li>dealerSeatNumber: {String(round.dealerSeatNumber)}</li>
-                <li>smallBlindSeatNumber: {String(round.smallBlindSeatNumber)}</li>
-                <li>bigBlindSeatNumber: {String(round.bigBlindSeatNumber)}</li>
-                <li>blinds: {round.smallBlind ?? "-"}/{round.bigBlind ?? "-"}</li>
-                <li>turnSeatNumber: {String(round.turnSeatNumber)}</li>
-                <li>pendingSeatNumbers: {pendingSeatNumbers.join(", ") || "none"}</li>
-                <li>currentBet: {round.currentBet ?? "-"}</li>
-                <li>minRaiseTo: {String(round.minRaiseTo)}</li>
-                <li>lastEndReason: {String(round.lastEndReason)}</li>
-                <li>lastWinnerSeatNumbers: {lastWinnerSeatNumbers.join(", ") || "none"}</li>
-                <li>
-                  lastPayouts:
-                  {lastPayouts.length
-                    ? ` ${lastPayouts.map((payout) => `${payout.seatNumber}:${payout.amount}`).join(", ")}`
-                    : " none"}
-                </li>
-                <li>folded: {foldedSeatNumbers.join(", ") || "none"}</li>
-              </ul>
-            ) : (
-              <p>No round state yet.</p>
-            )}
-          </div>
-          <div>
-            <h2>Raw room_state</h2>
-            <pre>{roomState ? prettyJson(roomState) : "waiting for room_state..."}</pre>
-          </div>
-        </section>
-        <section className="card debug-inner-card">
-          <h2>Event Log</h2>
-          <pre>{events.length > 0 ? events.join("\n") : "waiting..."}</pre>
-        </section>
-      </details>
     </main>
   );
 }

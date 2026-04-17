@@ -3,7 +3,7 @@ import {
   buildRaiseClosedSeatNumbers,
 } from "../../engine/actionState.js";
 import { validateBetAmount, validateRaiseTarget } from "../../engine/actionValidation.js";
-import { doesRaiseReopenAction } from "../../engine/bettingRules.js";
+import { doesRaiseReopenAction, computeNextMinRaiseTo } from "../../engine/bettingRules.js";
 
 const PLAYER_ACTIONS = new Set(["fold", "check", "call", "bet", "raise_to"]);
 
@@ -156,6 +156,7 @@ export function createPlayerActionHandlers(context) {
       const reopensAction = doesRaiseReopenAction(room.hand.minRaiseTo, targetAmount);
 
       const previousCurrentBet = room.hand.currentBet;
+      const previousMinRaiseTo = room.hand.minRaiseTo;
 
       currentPlayer.stack -= amountToCommit;
       currentPlayer.committedThisStreet += amountToCommit;
@@ -165,8 +166,14 @@ export function createPlayerActionHandlers(context) {
       room.hand.currentBet = currentPlayer.committedThisStreet;
 
       const raiseIncrement = room.hand.currentBet - previousCurrentBet;
-      if (raiseIncrement > 0 && reopensAction) {
-        room.hand.minRaiseTo = room.hand.currentBet + raiseIncrement;
+      if (raiseIncrement > 0) {
+        room.hand.minRaiseTo = computeNextMinRaiseTo({
+          previousCurrentBet,
+          previousMinRaiseTo,
+          nextCurrentBet: room.hand.currentBet,
+          raiseIncrement,
+          reopensAction,
+        });
       }
       amountCommitted = amountToCommit;
       note = isAllInTarget
@@ -218,6 +225,7 @@ export function createPlayerActionHandlers(context) {
       });
 
       context.publishRoomState(session.roomId);
+      context.maybeScheduleServerBotAction(room);
       return;
     }
 
@@ -233,6 +241,7 @@ export function createPlayerActionHandlers(context) {
           note: `${note || "ok"} manual_step_wait`,
         });
         context.publishRoomState(session.roomId);
+        context.maybeScheduleServerBotAction(room);
         return;
       }
 
@@ -259,10 +268,12 @@ export function createPlayerActionHandlers(context) {
           reason: progression.endResult.reason,
         });
         context.publishRoomState(session.roomId);
+        context.maybeScheduleServerBotAction(room);
         return;
       }
 
       context.publishRoomState(session.roomId);
+      context.maybeScheduleServerBotAction(room);
       return;
     }
 
@@ -281,6 +292,7 @@ export function createPlayerActionHandlers(context) {
     });
 
     context.publishRoomState(session.roomId);
+    context.maybeScheduleServerBotAction(room);
   }
 
   return {

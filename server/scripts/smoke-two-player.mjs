@@ -74,6 +74,12 @@ async function waitForRoundEnded(client) {
   });
 }
 
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(`Assertion failed: ${message}`);
+  }
+}
+
 async function run() {
   const alice = createClient("alice>");
   const bob = createClient("bob>");
@@ -89,10 +95,20 @@ async function run() {
   await sleep(120);
   send(alice, { type: "start_round" }, "start_round");
 
-  await waitForTurn(alice, 2);
-  send(bob, { type: "player_action", actionType: "call" }, "call");
+  const roundStartedState = await waitFor(() => {
+    const state = latestState(alice);
+    if (!state?.round?.inProgress) return null;
+    return state;
+  });
+  assert(roundStartedState.round.dealerSeatNumber === 1, "heads-up dealer should be seat 1");
+  assert(roundStartedState.round.smallBlindSeatNumber === 1, "heads-up dealer should post small blind");
+  assert(roundStartedState.round.bigBlindSeatNumber === 2, "heads-up non-dealer should post big blind");
+  assert(roundStartedState.round.turnSeatNumber === 1, "heads-up preflop action should start with small blind");
+
   await waitForTurn(alice, 1);
-  send(alice, { type: "player_action", actionType: "check" }, "check");
+  send(alice, { type: "player_action", actionType: "call" }, "call");
+  await waitForTurn(alice, 2);
+  send(bob, { type: "player_action", actionType: "check" }, "check");
   await waitForTurn(alice, 2);
   send(bob, { type: "player_action", actionType: "check" }, "check");
   await waitForTurn(alice, 1);

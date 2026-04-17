@@ -81,7 +81,10 @@ export function createRoundLifecycle(context) {
 
     room.table.dealerSeatNumber = dealerSeatNumber;
 
-    const smallBlindSeatNumber = context.getNextSeatInList(seatedSeatNumbers, dealerSeatNumber);
+    const isHeadsUp = seatedSeatNumbers.length === 2;
+    const smallBlindSeatNumber = isHeadsUp
+      ? dealerSeatNumber
+      : context.getNextSeatInList(seatedSeatNumbers, dealerSeatNumber);
     const bigBlindSeatNumber = context.getNextSeatInList(seatedSeatNumbers, smallBlindSeatNumber);
 
     room.hand.inProgress = true;
@@ -141,11 +144,10 @@ export function createRoundLifecycle(context) {
 
     const nextStreet = STREETS[currentStreetIndex + 1];
 
-    let drawnCards = [];
-    if (nextStreet === "flop") {
-      drawnCards = drawCards(room, 3);
-    } else {
-      drawnCards = drawCards(room, 1);
+    const expectedDrawCount = nextStreet === "flop" ? 3 : 1;
+    const drawnCards = drawCards(room, expectedDrawCount);
+    if (drawnCards.length !== expectedDrawCount) {
+      return null;
     }
 
     room.hand.street = nextStreet;

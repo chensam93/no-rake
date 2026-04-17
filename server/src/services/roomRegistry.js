@@ -39,6 +39,14 @@ export function getOrCreateRoom(roomId) {
         lastShowdown: null,
         lastPotBreakdown: [],
       },
+      serverBot: {
+        seatNumber: null,
+        profile: "tag",
+        seed: 1337,
+        actingDelayMs: 320,
+        timer: null,
+        botHandle: null,
+      },
     });
   }
 
@@ -65,6 +73,9 @@ export function removeSocketFromRoom(roomId, socket, helpers) {
 
   if (room.members.size === 0) {
     helpers.clearAutoStartTimer(room);
+    if (typeof helpers.clearServerBotTimer === "function") {
+      helpers.clearServerBotTimer(room);
+    }
     rooms.delete(roomId);
   }
 }

@@ -39,6 +39,9 @@ export function maybeScheduleAutoStart(room, reason, context) {
       }
     }
 
+    if (typeof context.maybeScheduleServerBotAction === "function") {
+      context.maybeScheduleServerBotAction(room);
+    }
     context.publishRoomState(room.id);
   }, delayMs);
 }

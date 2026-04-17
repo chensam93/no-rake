@@ -21,9 +21,9 @@ export function useSocketSenders(wsRef, botWsRef, appendEvent, onMainSendBlocked
 
   const sendBotJson = useCallback(
     (payload, label) => {
-      const ws = botWsRef.current;
+      const ws = botWsRef?.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        appendEvent("[bot] blocked: websocket not open");
+        appendEvent("[bot] blocked: server bot control socket not open");
         return;
       }
 

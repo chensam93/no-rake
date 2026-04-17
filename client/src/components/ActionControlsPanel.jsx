@@ -23,8 +23,6 @@ export default function ActionControlsPanel({
   onFold,
   onRaiseClick,
   onTogglePresets,
-  onOpenRaiseFineTune,
-  onEditPreflopSizing,
   onApplyPreset,
   onEditPreset,
   onRaiseNudge,
@@ -70,36 +68,20 @@ export default function ActionControlsPanel({
             </button>
           ) : null}
           {canRaiseAction && preflopRaiseUi ? (
-            <div className="preflop-raise-group">
-              <button
-                type="button"
-                className={`action-raise-button action-primary-button ${showRaiseSlider ? "action-raise-confirm" : ""}`}
-                onClick={onRaiseClick}
-                aria-label={
-                  showRaiseSlider
-                    ? `Confirm raise to ${Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}`
-                    : `Raise to ${preflopRaiseTarget} (${preflopSizingHint})`
-                }
-              >
-                {showRaiseSlider
-                  ? `Raise to ${Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}`
-                  : `Raise to ${preflopRaiseTarget}`}
-              </button>
-              {!showRaiseSlider ? (
-                <button
-                  type="button"
-                  className="preflop-preset-edit"
-                  title="Edit open-raise size (× big blind). Typical online open is about 2–3×."
-                  aria-label="Edit preflop open-raise multiplier"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    onEditPreflopSizing();
-                  }}
-                >
-                  ✎
-                </button>
-              ) : null}
-            </div>
+            <button
+              type="button"
+              className={`action-raise-button action-primary-button ${showRaiseSlider ? "action-raise-confirm" : ""}`}
+              onClick={onRaiseClick}
+              aria-label={
+                showRaiseSlider
+                  ? `Confirm raise to ${Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}`
+                  : `Raise to ${preflopRaiseTarget} (${preflopSizingHint})`
+              }
+            >
+              {showRaiseSlider
+                ? `Raise to ${Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}`
+                : `Raise to ${preflopRaiseTarget}`}
+            </button>
           ) : null}
           {canRaiseAction && !preflopRaiseUi ? (
             <button
@@ -108,15 +90,6 @@ export default function ActionControlsPanel({
               aria-label={showRaiseSlider ? `Confirm raise to ${amount}` : `Raise to ${amount}`}
             >
               Raise to {Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}
-            </button>
-          ) : null}
-          {canRaiseAction ? (
-            <button
-              className="action-sizes-button"
-              type="button"
-              onClick={preflopRaiseUi ? onOpenRaiseFineTune : onTogglePresets}
-            >
-              {preflopRaiseUi ? "More" : `Sizes ${showPresetButtons ? "▲" : "▼"}`}
             </button>
           ) : null}
         </div>

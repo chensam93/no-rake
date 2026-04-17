@@ -1,4 +1,21 @@
 export function createTableControlHandlers(context) {
+  function getHostRoom(socket, session, actionLabel) {
+    if (!session.roomId) {
+      context.sendJson(socket, { type: "error", message: `join_room before ${actionLabel}` });
+      return null;
+    }
+    const room = context.getRoom(session.roomId);
+    if (!room) {
+      context.sendJson(socket, { type: "error", message: "room not found" });
+      return null;
+    }
+    if (room.hostSocket !== socket) {
+      context.sendJson(socket, { type: "error", message: `only host can ${actionLabel}` });
+      return null;
+    }
+    return room;
+  }
+
   function handleSetAutoDeal(socket, session, parsed) {
     if (!session.roomId) {
       context.sendJson(socket, { type: "error", message: "join_room before set_auto_deal" });
@@ -70,6 +87,7 @@ export function createTableControlHandlers(context) {
       roomId: session.roomId,
       enabled: room.table.manualStepMode,
     });
+    context.maybeScheduleServerBotAction(room);
     context.publishRoomState(session.roomId);
   }
 
@@ -96,6 +114,19 @@ export function createTableControlHandlers(context) {
     }
 
     if (room.hand.inProgress) {
+      if (room.hand.pendingSeatNumbers.size > 0 && room.table.manualStepMode) {
+        const botStep = context.runServerBotStep(room);
+        if (botStep.acted) {
+          context.sendJson(socket, {
+            type: "bot_step_applied",
+            roomId: session.roomId,
+            reason: botStep.reason,
+          });
+          context.publishRoomState(session.roomId);
+          return;
+        }
+      }
+
       if (room.hand.pendingSeatNumbers.size > 0) {
         context.sendJson(socket, {
           type: "error",
@@ -145,6 +176,7 @@ export function createTableControlHandlers(context) {
       street: result.street,
       auto: false,
     });
+    context.maybeScheduleServerBotAction(room);
     context.publishRoomState(session.roomId);
   }
 
@@ -178,6 +210,89 @@ export function createTableControlHandlers(context) {
       street: result.street,
     });
 
+    context.maybeScheduleServerBotAction(room);
+    context.publishRoomState(session.roomId);
+  }
+
+  function handleSetServerBot(socket, session, parsed) {
+    const room = getHostRoom(socket, session, "change server bot seat");
+    if (!room) return;
+    if (room.hand.inProgress) {
+      context.sendJson(socket, {
+        type: "error",
+        message: "cannot change server bot seat during active round",
+      });
+      return;
+    }
+
+    const enabled = parsed.enabled !== false;
+    let result;
+    if (enabled) {
+      result = context.setServerBotSeat(room, parsed.seatNumber, parsed.profile);
+    } else {
+      result = context.clearServerBotSeat(room);
+    }
+    if (!result.ok) {
+      context.sendJson(socket, { type: "error", message: result.message });
+      return;
+    }
+    context.sendJson(socket, {
+      type: "server_bot_updated",
+      roomId: session.roomId,
+      enabled,
+      seatNumber: result.seatNumber ?? null,
+      profile: result.profile ?? room.serverBot?.profile ?? "tag",
+    });
+    context.publishRoomState(session.roomId);
+  }
+
+  function handleSetServerBotProfile(socket, session, parsed) {
+    const room = getHostRoom(socket, session, "change server bot profile");
+    if (!room) return;
+    const result = context.setServerBotProfile(room, parsed.profile);
+    if (!result.ok) {
+      context.sendJson(socket, { type: "error", message: result.message });
+      return;
+    }
+    context.sendJson(socket, {
+      type: "server_bot_profile_updated",
+      roomId: session.roomId,
+      profile: result.profile,
+    });
+    context.maybeScheduleServerBotAction(room);
+    context.publishRoomState(session.roomId);
+  }
+
+  function handleSetServerBotSeed(socket, session, parsed) {
+    const room = getHostRoom(socket, session, "change server bot seed");
+    if (!room) return;
+    const result = context.setServerBotSeed(room, parsed.seed);
+    if (!result.ok) {
+      context.sendJson(socket, { type: "error", message: result.message });
+      return;
+    }
+    context.sendJson(socket, {
+      type: "server_bot_seed_updated",
+      roomId: session.roomId,
+      seed: result.seed,
+    });
+    context.publishRoomState(session.roomId);
+  }
+
+  function handleSetServerBotDelay(socket, session, parsed) {
+    const room = getHostRoom(socket, session, "change server bot delay");
+    if (!room) return;
+    const result = context.setServerBotDelay(room, parsed.delayMs);
+    if (!result.ok) {
+      context.sendJson(socket, { type: "error", message: result.message });
+      return;
+    }
+    context.sendJson(socket, {
+      type: "server_bot_delay_updated",
+      roomId: session.roomId,
+      delayMs: result.delayMs,
+    });
+    context.maybeScheduleServerBotAction(room);
     context.publishRoomState(session.roomId);
   }
 
@@ -186,5 +301,9 @@ export function createTableControlHandlers(context) {
     handleSetManualStepMode,
     handleStepProgress,
     handleStartRound,
+    handleSetServerBot,
+    handleSetServerBotProfile,
+    handleSetServerBotSeed,
+    handleSetServerBotDelay,
   };
 }

@@ -16,6 +16,10 @@ export function createMessageRouter(context) {
         "sit_down",
         "start_round",
         "set_auto_deal",
+        "set_server_bot",
+        "set_server_bot_profile",
+        "set_server_bot_seed",
+        "set_server_bot_delay",
         "player_action:check/call/fold/bet/raise_to",
         "ping-*",
       ],
@@ -53,6 +57,26 @@ export function createMessageRouter(context) {
       return;
     }
 
+    if (parsed.type === "set_server_bot") {
+      tableControlHandlers.handleSetServerBot(socket, session, parsed);
+      return;
+    }
+
+    if (parsed.type === "set_server_bot_profile") {
+      tableControlHandlers.handleSetServerBotProfile(socket, session, parsed);
+      return;
+    }
+
+    if (parsed.type === "set_server_bot_seed") {
+      tableControlHandlers.handleSetServerBotSeed(socket, session, parsed);
+      return;
+    }
+
+    if (parsed.type === "set_server_bot_delay") {
+      tableControlHandlers.handleSetServerBotDelay(socket, session, parsed);
+      return;
+    }
+
     if (parsed.type === "step_progress") {
       tableControlHandlers.handleStepProgress(socket, session, parsed);
       return;
@@ -87,5 +111,6 @@ export function createMessageRouter(context) {
     sendHello,
     handleMessage,
     handleClose,
+    runInternalPlayerAction: playerActionHandlers.handlePlayerAction,
   };
 }

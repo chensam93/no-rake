@@ -1,7 +1,8 @@
 import WebSocket from "ws";
 import { buildPotsFromCommitments, resolvePots } from "../src/engine/potResolution.js";
 import { compareHandRanks } from "../src/engine/handEvaluator.js";
-import { doesRaiseReopenAction } from "../src/engine/bettingRules.js";
+import { doesRaiseReopenAction, computeNextMinRaiseTo } from "../src/engine/bettingRules.js";
+import { validateRaiseTarget } from "../src/engine/actionValidation.js";
 
 const WS_URL = process.env.WS_URL || "ws://127.0.0.1:3000/ws";
 const ROOM_ID = `sim-room-${Date.now()}`;
@@ -66,6 +67,10 @@ function getLatestRoomState(client) {
   return null;
 }
 
+function getPlayerStateBySeatNumber(roomState, seatNumber) {
+  return (roomState?.players ?? []).find((player) => player.seatNumber === seatNumber) ?? null;
+}
+
 async function waitForTurn(client, seatNumber, street) {
   await waitFor(() => {
     const state = getLatestRoomState(client);
@@ -88,6 +93,32 @@ async function waitForRoundEnded(client, fromIndex = 0) {
   });
 }
 
+async function waitForActionAppliedMessage(client, fromIndex = 0, expectedActionType = null) {
+  return waitFor(() => {
+    for (let index = client.parsedMessages.length - 1; index >= fromIndex; index -= 1) {
+      const message = client.parsedMessages[index];
+      if (message.type !== "action_applied") continue;
+      if (!expectedActionType || message.actionType === expectedActionType) {
+        return message;
+      }
+    }
+    return null;
+  });
+}
+
+async function waitForErrorMessage(client, fromIndex = 0, expectedText = null) {
+  return waitFor(() => {
+    for (let index = client.parsedMessages.length - 1; index >= fromIndex; index -= 1) {
+      const message = client.parsedMessages[index];
+      if (message.type !== "error" || typeof message.message !== "string") continue;
+      if (!expectedText || message.message.includes(expectedText)) {
+        return message;
+      }
+    }
+    return null;
+  });
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(`Assertion failed: ${message}`);
 }
@@ -96,6 +127,41 @@ function runDeterministicPotMathAssertions() {
   assert(doesRaiseReopenAction(200, 200) === true, "full raise should reopen action");
   assert(doesRaiseReopenAction(200, 240) === true, "larger raise should reopen action");
   assert(doesRaiseReopenAction(200, 150) === false, "short raise should not reopen action");
+
+  const shortAllInNextMinRaiseTo = computeNextMinRaiseTo({
+    previousCurrentBet: 100,
+    previousMinRaiseTo: 200,
+    nextCurrentBet: 150,
+    raiseIncrement: 50,
+    reopensAction: false,
+  });
+  assert(
+    shortAllInNextMinRaiseTo === 250,
+    "short all-in should keep full raise size and set minRaiseTo to 250",
+  );
+  const shortRaiseValidationError = validateRaiseTarget({
+    targetAmount: 200,
+    currentBet: 150,
+    currentCommittedThisStreet: 150,
+    currentStack: 1000,
+    minRaiseTo: shortAllInNextMinRaiseTo,
+  });
+  assert(
+    shortRaiseValidationError === "raise_to must be at least 250 unless all-in",
+    "re-raise to 200 must be rejected after short all-in",
+  );
+
+  const fullRaiseNextMinRaiseTo = computeNextMinRaiseTo({
+    previousCurrentBet: 100,
+    previousMinRaiseTo: 200,
+    nextCurrentBet: 250,
+    raiseIncrement: 150,
+    reopensAction: true,
+  });
+  assert(
+    fullRaiseNextMinRaiseTo === 400,
+    "full raise should move minRaiseTo to currentBet plus raise size",
+  );
 
   const foldEligibilityPots = buildPotsFromCommitments([
     { seatNumber: 1, committed: 100, folded: false },
@@ -134,6 +200,11 @@ async function run() {
   const alice = createClient("alice>");
   const bob = createClient("bob>");
   const carol = createClient("carol>");
+  const clientsBySeatNumber = new Map([
+    [1, alice],
+    [2, bob],
+    [3, carol],
+  ]);
 
   await Promise.all([waitForOpen(alice), waitForOpen(bob), waitForOpen(carol)]);
 
@@ -205,6 +276,234 @@ async function run() {
   );
   const totalPayout = (hand2Ended.payouts ?? []).reduce((sum, payout) => sum + (payout.amount ?? 0), 0);
   assert(totalPayout === 1400, "total payout should equal 1400");
+
+  // Hand 3: regression scenario for short all-in raise not reopening action.
+  const hand3StartIndex = alice.parsedMessages.length;
+  send(alice, { type: "start_round" }, "start_round hand3");
+  await waitForTurn(alice, 3, "preflop");
+
+  const hand3PreRaiseState = getLatestRoomState(alice);
+  const seat3StatePreRaise = getPlayerStateBySeatNumber(hand3PreRaiseState, 3);
+  const seat1StatePreRaise = getPlayerStateBySeatNumber(hand3PreRaiseState, 1);
+  const seat2StatePreRaise = getPlayerStateBySeatNumber(hand3PreRaiseState, 2);
+  const currentBetPreRaise = Number(hand3PreRaiseState?.round?.currentBet ?? 0);
+  const minRaiseToPreRaise = Number(hand3PreRaiseState?.round?.minRaiseTo ?? 0);
+  const seat3MaxTarget = Number(seat3StatePreRaise?.committedThisStreet ?? 0) + Number(seat3StatePreRaise?.stack ?? 0);
+  const seat1AllInTargetPreRaise =
+    Number(seat1StatePreRaise?.committedThisStreet ?? 0) + Number(seat1StatePreRaise?.stack ?? 0);
+  const seat2AllInTargetPreRaise =
+    Number(seat2StatePreRaise?.committedThisStreet ?? 0) + Number(seat2StatePreRaise?.stack ?? 0);
+  const maxOpponentAllInTargetPreRaise = Math.max(seat1AllInTargetPreRaise, seat2AllInTargetPreRaise);
+
+  const requiredOpenRaiseTarget = Math.floor((maxOpponentAllInTargetPreRaise + currentBetPreRaise) / 2) + 1;
+  const openRaiseTarget = Math.max(minRaiseToPreRaise, requiredOpenRaiseTarget);
+  assert(
+    openRaiseTarget < seat3MaxTarget,
+    "hand3 setup requires seat 3 to have enough stack for reopening raise setup",
+  );
+
+  send(
+    carol,
+    { type: "player_action", actionType: "raise_to", amount: openRaiseTarget },
+    `h3 p3 raise_to ${openRaiseTarget}`,
+  );
+  const hand3PostOpenRaiseState = await waitFor(() => {
+    const state = getLatestRoomState(alice);
+    if (!state?.round?.inProgress || state.round.street !== "preflop") return null;
+    const turnSeatNumber = Number(state.round.turnSeatNumber ?? 0);
+    if (!turnSeatNumber || turnSeatNumber === 3) return null;
+    return state;
+  });
+  const hand3MinRaiseToAfterOpen = Number(hand3PostOpenRaiseState?.round?.minRaiseTo ?? 0);
+  const getShortAllInTarget = (roomState, seatNumber) => {
+    const seatState = getPlayerStateBySeatNumber(roomState, seatNumber);
+    if (!seatState) return null;
+    const currentBet = Number(roomState?.round?.currentBet ?? 0);
+    const allInTarget = Number(seatState.committedThisStreet ?? 0) + Number(seatState.stack ?? 0);
+    if (allInTarget <= currentBet) return null;
+    if (allInTarget >= hand3MinRaiseToAfterOpen) return null;
+    return allInTarget;
+  };
+
+  let shortAllInTurnState = hand3PostOpenRaiseState;
+  let shortAllInSeatNumber = Number(shortAllInTurnState.round.turnSeatNumber);
+  let shortAllInTarget = getShortAllInTarget(shortAllInTurnState, shortAllInSeatNumber);
+  if (shortAllInTarget === null) {
+    const foldingActorClient = clientsBySeatNumber.get(shortAllInSeatNumber);
+    assert(foldingActorClient, "hand3 expected fold client before short all-in");
+    send(
+      foldingActorClient,
+      { type: "player_action", actionType: "fold" },
+      `h3 p${shortAllInSeatNumber} fold (cannot short all-in)`,
+    );
+    shortAllInTurnState = await waitFor(() => {
+      const state = getLatestRoomState(alice);
+      if (!state?.round?.inProgress || state.round.street !== "preflop") return null;
+      const turnSeat = Number(state.round.turnSeatNumber ?? 0);
+      if (!turnSeat || turnSeat === shortAllInSeatNumber) return null;
+      return state;
+    });
+    shortAllInSeatNumber = Number(shortAllInTurnState.round.turnSeatNumber);
+    shortAllInTarget = getShortAllInTarget(shortAllInTurnState, shortAllInSeatNumber);
+  }
+  assert(
+    shortAllInTarget !== null,
+    "hand3 requires an acting seat with a valid short all-in target",
+  );
+  const shortAllInActorClient = clientsBySeatNumber.get(shortAllInSeatNumber);
+  assert(shortAllInActorClient, "hand3 expected short all-in actor client");
+  const shortAllInActionStartIndex = shortAllInActorClient.parsedMessages.length;
+  send(
+    shortAllInActorClient,
+    { type: "player_action", actionType: "raise_to", amount: shortAllInTarget },
+    `h3 p${shortAllInSeatNumber} short-all-in raise_to ${shortAllInTarget}`,
+  );
+  const shortAllInAppliedMessage = await waitForActionAppliedMessage(
+    shortAllInActorClient,
+    shortAllInActionStartIndex,
+    "raise_to",
+  );
+  assert(
+    shortAllInAppliedMessage.note === "all_in_raise_no_reopen",
+    "short all-in raise should emit all_in_raise_no_reopen action note",
+  );
+  const hand3PostShortAllInState = await waitFor(() => {
+    const state = getLatestRoomState(alice);
+    if (!state?.round?.inProgress || state.round.street !== "preflop") return null;
+    const turnSeatNumber = Number(state.round.turnSeatNumber ?? 0);
+    if (!turnSeatNumber || turnSeatNumber === shortAllInSeatNumber) return null;
+    return state;
+  });
+  const hand3CurrentBetAfterShortAllIn = Number(hand3PostShortAllInState?.round?.currentBet ?? 0);
+  const hand3MinRaiseToAfterShortAllIn = Number(hand3PostShortAllInState?.round?.minRaiseTo ?? 0);
+  const expectedShortAllInMinRaiseTo =
+    hand3CurrentBetAfterShortAllIn + (openRaiseTarget - currentBetPreRaise);
+  assert(
+    hand3MinRaiseToAfterShortAllIn === expectedShortAllInMinRaiseTo,
+    "hand3 minRaiseTo should carry prior full raise size after short all-in",
+  );
+
+  // Cleanly end hand 3 after regression assertion.
+  while (true) {
+    const latestHand3State = getLatestRoomState(alice);
+    if (!latestHand3State?.round?.inProgress) break;
+    const pendingSeatNumbers = Array.isArray(latestHand3State.round.pendingSeatNumbers)
+      ? latestHand3State.round.pendingSeatNumbers
+      : [];
+    if (pendingSeatNumbers.length === 0) break;
+    const nextTurnSeatNumber = Number(latestHand3State.round.turnSeatNumber ?? 0);
+    if (!nextTurnSeatNumber) break;
+    const nextTurnClient = clientsBySeatNumber.get(nextTurnSeatNumber);
+    assert(nextTurnClient, "hand3 expected next actor client during cleanup");
+    send(nextTurnClient, { type: "player_action", actionType: "fold" }, `h3 p${nextTurnSeatNumber} fold`);
+    await sleep(40);
+  }
+  const hand3ResolvedRoundState = await waitFor(() => {
+    const state = getLatestRoomState(alice);
+    if (!state?.round) return null;
+    if (state.round.inProgress) return null;
+    if (!state.round.lastEndReason) return null;
+    return state.round;
+  });
+  assert(
+    hand3ResolvedRoundState.lastEndReason === "fold_winner" ||
+      hand3ResolvedRoundState.lastEndReason === "showdown",
+    "hand3 should end after cleanup actions",
+  );
+
+  // Hand 4: seeded server-bot scenario for deterministic bot control coverage.
+  send(
+    alice,
+    { type: "set_server_bot", enabled: true, seatNumber: 4, profile: "lag" },
+    "set_server_bot seat4",
+  );
+  send(alice, { type: "set_server_bot_seed", seed: 90210 }, "set_server_bot_seed");
+  send(alice, { type: "set_server_bot_delay", delayMs: 0 }, "set_server_bot_delay");
+  await sleep(120);
+  const hand4StartIndex = alice.parsedMessages.length;
+  send(alice, { type: "start_round" }, "start_round hand4");
+
+  await waitFor(() => {
+    const state = getLatestRoomState(alice);
+    return state?.round?.inProgress && state.round.street === "preflop";
+  });
+
+  let observedBotPlayerAction = false;
+  for (let steps = 0; steps < 10; steps += 1) {
+    const state = getLatestRoomState(alice);
+    if (!state?.round?.inProgress) break;
+    const actionLog = Array.isArray(state.round?.actionLog) ? state.round.actionLog : [];
+    observedBotPlayerAction = actionLog.some(
+      (action) =>
+        action.seatNumber === 4 &&
+        ["fold", "check", "call", "bet", "raise_to"].includes(action.actionType),
+    );
+    if (observedBotPlayerAction) break;
+    const turnSeat = Number(state.round?.turnSeatNumber ?? 0);
+    if (!turnSeat) {
+      await sleep(40);
+      continue;
+    }
+    if (turnSeat === 4) {
+      await waitFor(() => {
+        const nextState = getLatestRoomState(alice);
+        const nextActionLog = Array.isArray(nextState?.round?.actionLog) ? nextState.round.actionLog : [];
+        return nextActionLog.length > actionLog.length || nextState?.round?.turnSeatNumber !== 4;
+      });
+      continue;
+    }
+    const actorClient = clientsBySeatNumber.get(turnSeat);
+    if (!actorClient) {
+      await sleep(40);
+      continue;
+    }
+    const actingPlayer = getPlayerStateBySeatNumber(state, turnSeat);
+    const actingToCall = Math.max(
+      0,
+      Number(state.round?.currentBet ?? 0) - Number(actingPlayer?.committedThisStreet ?? 0),
+    );
+    if (actingToCall <= 0) {
+      send(actorClient, { type: "player_action", actionType: "check" }, `h4 p${turnSeat} check`);
+    } else {
+      send(actorClient, { type: "player_action", actionType: "call" }, `h4 p${turnSeat} call`);
+    }
+    await sleep(40);
+  }
+
+  assert(observedBotPlayerAction, "hand4 should include at least one server-bot player action");
+  while (true) {
+    const latestHand4State = getLatestRoomState(alice);
+    if (!latestHand4State?.round?.inProgress) break;
+    const turnSeatNumber = Number(latestHand4State.round.turnSeatNumber ?? 0);
+    if (!turnSeatNumber) {
+      await sleep(40);
+      continue;
+    }
+    if (turnSeatNumber === 4) {
+      await sleep(40);
+      continue;
+    }
+    const turnClient = clientsBySeatNumber.get(turnSeatNumber);
+    if (!turnClient) {
+      await sleep(40);
+      continue;
+    }
+    send(turnClient, { type: "player_action", actionType: "fold" }, `h4 cleanup p${turnSeatNumber} fold`);
+    await sleep(40);
+  }
+  const hand4ResolvedRoundState = await waitFor(() => {
+    const state = getLatestRoomState(alice);
+    if (!state?.round || state.round.inProgress) return null;
+    if (!state.round.lastEndReason) return null;
+    return state.round;
+  });
+  assert(
+    hand4ResolvedRoundState.lastEndReason === "fold_winner" ||
+      hand4ResolvedRoundState.lastEndReason === "showdown",
+    "hand4 should resolve after bot-action scenario",
+  );
+  send(alice, { type: "set_server_bot", enabled: false, seatNumber: 4 }, "clear_server_bot seat4");
+  await sleep(120);
 
   console.log("simulate-round: all assertions passed");
 
