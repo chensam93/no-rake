@@ -24,7 +24,16 @@
 
 html,
 body {
+  margin: 0;
+  min-height: 100%;
   overflow-y: scroll;
+  background: #020617;
+  color: var(--nr-text-primary);
+}
+
+#root {
+  min-height: 100vh;
+  background: radial-gradient(circle at 50% -10%, rgba(30, 41, 59, 0.65), #020617 55%);
 }
 
 /* Accessibility: visible focus ring (keyboard); avoid mouse-click ring noise */
@@ -79,6 +88,14 @@ h2 {
   margin: 0 0 0.5rem;
 }
 
+.top-branding h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #e2e8f0;
+}
+
 .sub {
   margin: 0;
   color: #4b5563;
@@ -89,21 +106,72 @@ h2 {
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.top-bar-overlay {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.65rem;
+  right: 0.65rem;
+  z-index: 18;
+  pointer-events: auto;
 }
 
 .top-status {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.38rem;
+  align-items: center;
+  margin-left: auto;
+}
+
+.top-status-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
   align-items: center;
 }
 
+.top-game-menu {
+  position: relative;
+}
+
+.top-game-menu-toggle {
+  min-width: 6.4rem;
+}
+
+.top-game-menu-panel {
+  position: absolute;
+  top: calc(100% + 0.32rem);
+  right: 0;
+  z-index: 25;
+  min-width: 12rem;
+  display: grid;
+  gap: 0.36rem;
+  padding: 0.45rem;
+  border-radius: 0.55rem;
+  border: 1px solid rgba(71, 85, 105, 0.85);
+  background: rgba(2, 6, 23, 0.96);
+  box-shadow: 0 8px 18px rgba(2, 6, 23, 0.32);
+}
+
+.top-game-menu-panel .top-start-button,
+.top-game-menu-panel .top-density-button {
+  width: 100%;
+  justify-content: center;
+}
+
 .top-start-button {
-  border: 1px solid #1f2937;
-  background: #0f172a;
-  color: #f8fafc;
+  border: 1px solid #334155;
+  background: #111827;
+  color: #e2e8f0;
   border-radius: 999px;
-  padding: 0.25rem 0.68rem;
-  font-size: 0.78rem;
+  padding: 0.2rem 0.58rem;
+  font-size: 0.68rem;
   font-weight: 700;
   transition:
     background var(--nr-duration) var(--nr-ease-out),
@@ -116,22 +184,22 @@ h2 {
 }
 
 .top-start-button:hover {
-  background: #1e293b;
+  background: #1f2937;
 }
 
 .top-start-button:disabled {
-  background: #cbd5e1;
+  background: #1e293b;
   color: #64748b;
-  border-color: #94a3b8;
+  border-color: #475569;
 }
 
 .top-density-button {
   border: 1px solid #334155;
-  background: #e2e8f0;
-  color: #0f172a;
+  background: #0b1220;
+  color: #cbd5e1;
   border-radius: 999px;
-  padding: 0.18rem 0.52rem;
-  font-size: 0.66rem;
+  padding: 0.16rem 0.48rem;
+  font-size: 0.63rem;
   font-weight: 700;
   transition:
     background var(--nr-duration) var(--nr-ease-out),
@@ -143,7 +211,7 @@ h2 {
 }
 
 .top-density-button:hover {
-  background: #cbd5e1;
+  background: #1e293b;
 }
 
 .connection-banner {
@@ -318,6 +386,7 @@ h2 {
 .table-pov-shell {
   grid-area: pov;
   min-height: 0;
+  padding-top: 1.8rem;
 }
 
 .table-hud-row {
@@ -1757,8 +1826,8 @@ button:disabled {
 .role-badge {
   display: inline-block;
   border-radius: 999px;
-  padding: 0.15rem 0.55rem;
-  font-size: 0.8rem;
+  padding: 0.12rem 0.44rem;
+  font-size: 0.68rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.02em;
@@ -1947,8 +2016,20 @@ pre {
 
 @media (max-width: 900px) {
   .top-bar {
-    flex-direction: column;
-    align-items: flex-start;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .top-status {
+    width: 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+
+  .top-game-menu-panel {
+    right: 0;
+    min-width: min(78vw, 16rem);
   }
 
   .table-stage {

@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import HandStatusPanel from "./components/HandStatusPanel.jsx";
 import HandContextPanel from "./components/HandContextPanel.jsx";
 import ActionControlsPanel from "./components/ActionControlsPanel.jsx";
 import TableCenterBoard from "./components/TableCenterBoard.jsx";
 import SeatNodesLayer from "./components/SeatNodesLayer.jsx";
+import { useTableHotkeys } from "./hooks/useTableHotkeys.js";
 import { useSocketSenders } from "./hooks/useSocketSenders.js";
 import { computeBotDecision } from "./lib/botDecision.js";
 import { getRecommendedPreflopRaiseTo } from "./lib/preflopSizing.js";
+import { buildPlayersBySeat, deriveLocalPlayer, deriveSeatOccupancy } from "./lib/tableSelectors.js";
 
 const DEFAULT_WS_URL = "ws://127.0.0.1:3000/ws";
 const WS_URL = import.meta.env.VITE_WS_URL || DEFAULT_WS_URL;
 const DEFAULT_QUICK_MODE = true;
 const DEFAULT_BET_PRESET_TEXT = "33,50,66,100";
 const PREFLOP_OPEN_BB_KEY = "no-rake-preflop-open-bb-mult";
+const SFX_ENABLED_KEY = "no-rake-sfx-enabled";
 
 function readStoredPreflopOpenBbMultiple() {
   try {
@@ -25,6 +28,17 @@ function readStoredPreflopOpenBbMultiple() {
     return Math.min(6, Math.max(1.5, Math.round(parsed * 20) / 20));
   } catch {
     return 2.5;
+  }
+}
+
+function readStoredSfxEnabled() {
+  try {
+    if (typeof localStorage === "undefined") return true;
+    const raw = localStorage.getItem(SFX_ENABLED_KEY);
+    if (raw === null) return true;
+    return raw !== "0";
+  } catch {
+    return true;
   }
 }
 /* Percent positions on felt; edge seats nudged inward so spacing to oval rim is more even */
@@ -39,16 +53,26 @@ const SEAT_LAYOUT = {
   8: { top: "38%", left: "14%" },
   9: { top: "65%", left: "15%" },
 };
+const BET_MARKER_SEAT_TWEAKS = {
+  1: { top: -1.8, left: 2.7 },
+  2: { top: -3.2, left: -1.7 },
+  3: { top: -1.5, left: -0.8 },
+  8: { top: -0.8, left: 0.8 },
+  9: { top: -1.5, left: 1.1 },
+};
 function getBetMarkerPosition(seatNumber) {
   const seatLayout = SEAT_LAYOUT[seatNumber];
   if (!seatLayout) return { top: "50%", left: "50%" };
   const seatTop = Number.parseFloat(seatLayout.top);
   const seatLeft = Number.parseFloat(seatLayout.left);
   // Keep committed bet markers in front of each player (closer to hole cards than board center).
-  const towardCenter = 0.28;
-  const top = seatTop + (50 - seatTop) * towardCenter;
-  const left = seatLeft + (50 - seatLeft) * towardCenter;
-  return { top: `${top}%`, left: `${left}%` };
+  const towardCenter = 0.34;
+  const baseTop = seatTop + (50 - seatTop) * towardCenter;
+  const baseLeft = seatLeft + (50 - seatLeft) * towardCenter;
+  const tweak = BET_MARKER_SEAT_TWEAKS[seatNumber] ?? { top: 0, left: 0 };
+  const top = baseTop + tweak.top;
+  const left = baseLeft + tweak.left;
+  return { top: `${top.toFixed(2)}%`, left: `${left.toFixed(2)}%` };
 }
 
 function prettyJson(value) {
@@ -180,7 +204,11 @@ function App() {
   const botAutoActionTimeoutRef = useRef(null);
   const botPendingActionKeyRef = useRef(null);
   const botActionModeRef = useRef("auto");
-  const tableHotkeysRef = useRef({});
+  const audioContextRef = useRef(null);
+  const previousTurnSeatRef = useRef(null);
+  const previousConnectionStateRef = useRef(null);
+  const previousLastEndReasonRef = useRef(null);
+  const soundEnabledRef = useRef(readStoredSfxEnabled());
   const [connectionState, setConnectionState] = useState("connecting");
   const [botState, setBotState] = useState("off");
   const [botSeatNumber, setBotSeatNumber] = useState(null);
@@ -200,8 +228,10 @@ function App() {
   const [showAdvancedHandInfo, setShowAdvancedHandInfo] = useState(false);
   const [showHandLog, setShowHandLog] = useState(false);
   const [showPresetButtons, setShowPresetButtons] = useState(false);
+  const [showTopGameMenu, setShowTopGameMenu] = useState(false);
   const [preflopOpenBbMultiple, setPreflopOpenBbMultiple] = useState(readStoredPreflopOpenBbMultiple);
   const [showDevTools, setShowDevTools] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(readStoredSfxEnabled);
   const [roomState, setRoomState] = useState(null);
   const [lastServerError, setLastServerError] = useState(null);
   const [sendBlockedNotice, setSendBlockedNotice] = useState(null);
@@ -222,9 +252,79 @@ function App() {
     const stamped = `[${timestamp()}] ${line}`;
     setEvents((prev) => [...prev.slice(-79), stamped]);
   };
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+    try {
+      localStorage.setItem(SFX_ENABLED_KEY, soundEnabled ? "1" : "0");
+    } catch {
+      // ignore storage failures
+    }
+  }, [soundEnabled]);
+
+  const playUiCue = useCallback((cueType) => {
+    if (!soundEnabledRef.current) return;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContextClass();
+    }
+    const context = audioContextRef.current;
+    if (!context) return;
+    if (context.state === "suspended") {
+      void context.resume().catch(() => {});
+    }
+
+    const playTone = ({ frequency, durationMs, gain, type = "sine", offsetMs = 0 }) => {
+      const oscillator = context.createOscillator();
+      const gainNode = context.createGain();
+      const startAt = context.currentTime + offsetMs / 1000;
+      const endAt = startAt + durationMs / 1000;
+
+      oscillator.type = type;
+      oscillator.frequency.setValueAtTime(frequency, startAt);
+      gainNode.gain.setValueAtTime(0.0001, startAt);
+      gainNode.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain), startAt + 0.01);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, endAt);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(context.destination);
+      oscillator.start(startAt);
+      oscillator.stop(endAt);
+    };
+
+    try {
+      if (cueType === "action") {
+        playTone({ frequency: 740, durationMs: 65, gain: 0.028, type: "triangle" });
+        return;
+      }
+      if (cueType === "turn") {
+        playTone({ frequency: 660, durationMs: 70, gain: 0.024, type: "triangle" });
+        playTone({ frequency: 988, durationMs: 80, gain: 0.022, type: "triangle", offsetMs: 90 });
+        return;
+      }
+      if (cueType === "round_end") {
+        playTone({ frequency: 523, durationMs: 90, gain: 0.026, type: "sine" });
+        playTone({ frequency: 659, durationMs: 120, gain: 0.022, type: "sine", offsetMs: 110 });
+        return;
+      }
+      if (cueType === "error") {
+        playTone({ frequency: 210, durationMs: 130, gain: 0.03, type: "sawtooth" });
+        playTone({ frequency: 160, durationMs: 120, gain: 0.018, type: "sawtooth", offsetMs: 110 });
+        return;
+      }
+      if (cueType === "connect") {
+        playTone({ frequency: 440, durationMs: 60, gain: 0.02, type: "sine" });
+        playTone({ frequency: 660, durationMs: 70, gain: 0.018, type: "sine", offsetMs: 70 });
+      }
+    } catch {
+      // If sound generation fails, silently continue.
+    }
+  }, []);
+
   const onMainSendBlocked = useCallback(() => {
     setSendBlockedNotice("Not connected — your action was not sent.");
-  }, []);
+    playUiCue("error");
+  }, [playUiCue]);
   const { sendJson, sendBotJson } = useSocketSenders(wsRef, botWsRef, appendEvent, onMainSendBlocked);
 
   const clearPendingBotAutoAction = () => {
@@ -329,69 +429,6 @@ function App() {
     sendJson({ type: "step_progress" }, "step_progress");
     appendEvent("[bot] step mode: progression advanced");
   };
-
-  useEffect(() => {
-    const onTableHotkey = (event) => {
-      const targetElement = event.target;
-      const tagName =
-        targetElement && typeof targetElement.tagName === "string"
-          ? targetElement.tagName.toLowerCase()
-          : "";
-      const isTypingTarget =
-        tagName === "input" ||
-        tagName === "textarea" ||
-        targetElement?.isContentEditable === true;
-      if (isTypingTarget) return;
-
-      const h = tableHotkeysRef.current;
-      if (!h) return;
-
-      if (event.code === "Space" && h.botActionMode === "step") {
-        const stepDecision = h.getBotDecision(h.roomState);
-        if (stepDecision) {
-          event.preventDefault();
-          h.runBotStep();
-          return;
-        }
-      }
-
-      if (!h.isLocalTurn) return;
-
-      if (event.code === "Space" && h.canCheckAction) {
-        event.preventDefault();
-        h.submitCheck();
-        return;
-      }
-      if (event.code === "KeyC" && h.canCheckAction) {
-        event.preventDefault();
-        h.submitCheck();
-        return;
-      }
-      if (event.code === "KeyF" && h.canFoldAction) {
-        event.preventDefault();
-        h.submitFold();
-        return;
-      }
-      if (event.code === "KeyL" && h.canCallAction) {
-        event.preventDefault();
-        h.submitCall();
-        return;
-      }
-      if (event.code === "KeyR" && h.canRaiseAction) {
-        event.preventDefault();
-        h.handleRaiseClick();
-        return;
-      }
-      if (event.code === "KeyB" && h.canBetAction) {
-        event.preventDefault();
-        h.setShowPresetButtons((previous) => !previous);
-      }
-    };
-    window.addEventListener("keydown", onTableHotkey);
-    return () => {
-      window.removeEventListener("keydown", onTableHotkey);
-    };
-  }, []);
 
   const handleBotActionModeChange = (nextMode) => {
     clearPendingBotAutoAction();
@@ -550,6 +587,7 @@ function App() {
           message: parsed.message,
           category: classifyServerErrorMessage(parsed.message),
         });
+        playUiCue("error");
       }
     };
 
@@ -564,15 +602,23 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stopBot/appendEvent omitted to avoid reconnect churn
   }, [mainSocketEpoch]);
 
-  const seats = Array.from({ length: 9 }, (_, index) => index + 1);
-  const playersBySeat = new Map();
-  if (roomState?.players) {
-    for (const player of roomState.players) {
-      if (player.seatNumber !== null) {
-        playersBySeat.set(player.seatNumber, player);
+  useEffect(() => {
+    const previousConnectionState = previousConnectionStateRef.current;
+    if (previousConnectionState && previousConnectionState !== connectionState) {
+      if (connectionState === "open") {
+        playUiCue("connect");
+      } else if (
+        previousConnectionState === "open" &&
+        (connectionState === "closed" || connectionState === "error")
+      ) {
+        playUiCue("error");
       }
     }
-  }
+    previousConnectionStateRef.current = connectionState;
+  }, [connectionState, playUiCue]);
+
+  const seats = Array.from({ length: 9 }, (_, index) => index + 1);
+  const playersBySeat = buildPlayersBySeat(roomState);
   const table = roomState?.table ?? {};
   const round = roomState?.round ?? {};
   const blindUnitValue = Math.max(1, Number(round.bigBlind ?? table.bigBlind ?? 20));
@@ -591,10 +637,7 @@ function App() {
   const boardSlots = Array.from({ length: 5 }, (_, index) => boardCards[index] ?? null);
   const hasRound = Boolean(roomState?.round?.inProgress);
   const actionLog = Array.isArray(round.actionLog) ? round.actionLog : [];
-  const localPlayer =
-    roomState?.players?.find(
-      (candidate) => candidate.seatNumber !== null && candidate.playerName === playerName,
-    ) ?? playersBySeat.get(seatNumber) ?? null;
+  const localPlayer = deriveLocalPlayer(roomState, playersBySeat, playerName, seatNumber);
   const localSeatNumber = localPlayer?.seatNumber ?? null;
   const localToCall = localPlayer
     ? Math.max(0, (round.currentBet ?? 0) - (localPlayer.committedThisStreet ?? 0))
@@ -745,13 +788,35 @@ function App() {
       : isBotStepPossible
         ? "▶ Next (Space)"
         : "Not ready — wait";
-  const occupiedSeatNumbers = seats.filter((seat) => playersBySeat.has(seat));
-  const openSeatNumbers = seats.filter((seat) => !playersBySeat.has(seat));
+  const { occupiedSeatNumbers, openSeatNumbers } = deriveSeatOccupancy(seats, playersBySeat);
   const preferredRejoinSeat = Math.max(1, Math.min(9, Number(seatNumber) || 1));
   const onRejoinPreferredSeat = () => {
     joinLocalSeat(preferredRejoinSeat);
     setOpenSeatMenuSeat(null);
   };
+
+  useEffect(() => {
+    if (!hasRound) {
+      previousTurnSeatRef.current = null;
+      return;
+    }
+    const previousTurnSeat = previousTurnSeatRef.current;
+    const nextTurnSeat = round.turnSeatNumber ?? null;
+    if (previousTurnSeat !== null && previousTurnSeat !== nextTurnSeat && isLocalTurn) {
+      playUiCue("turn");
+    }
+    previousTurnSeatRef.current = nextTurnSeat;
+  }, [hasRound, isLocalTurn, playUiCue, round.turnSeatNumber]);
+
+  useEffect(() => {
+    const previousLastEndReason = previousLastEndReasonRef.current;
+    const currentLastEndReason = round.lastEndReason ?? null;
+    if (!hasRound && currentLastEndReason && currentLastEndReason !== previousLastEndReason) {
+      playUiCue("round_end");
+    }
+    previousLastEndReasonRef.current = currentLastEndReason;
+  }, [hasRound, playUiCue, round.lastEndReason]);
+
   const applyBetPreset = (percent) => {
     const pot = Math.max(1, Number(round.pot ?? 0));
     const currentBet = Number(round.currentBet ?? 0);
@@ -769,6 +834,7 @@ function App() {
         { type: "player_action", actionType: "bet", amount: nextAmount },
         "player_action:bet",
       );
+      playUiCue("action");
       setShowPresetButtons(false);
     }
   };
@@ -809,6 +875,7 @@ function App() {
           { type: "player_action", actionType: "raise_to", amount: clampedAmount },
           "player_action:raise_to",
         );
+        playUiCue("action");
         setShowRaiseSlider(false);
         setShowPresetButtons(false);
         return;
@@ -817,6 +884,7 @@ function App() {
         { type: "player_action", actionType: "raise_to", amount: preflopRaiseTarget },
         "player_action:raise_to",
       );
+      playUiCue("action");
       return;
     }
     const clampedAmount = Math.max(raiseMinTarget, Math.min(raiseMaxTarget, Math.round(amount)));
@@ -825,6 +893,7 @@ function App() {
         { type: "player_action", actionType: "raise_to", amount: clampedAmount },
         "player_action:raise_to",
       );
+      playUiCue("action");
       setShowRaiseSlider(false);
       setShowPresetButtons(false);
       return;
@@ -870,14 +939,17 @@ function App() {
   const submitCheck = () => {
     closeActionPanels();
     sendJson({ type: "player_action", actionType: "check" }, "player_action:check");
+    playUiCue("action");
   };
   const submitCall = () => {
     closeActionPanels();
     sendJson({ type: "player_action", actionType: "call" }, "player_action:call");
+    playUiCue("action");
   };
   const submitFold = () => {
     closeActionPanels();
     sendJson({ type: "player_action", actionType: "fold" }, "player_action:fold");
+    playUiCue("action");
   };
   const submitBet = () => {
     closeActionPanels();
@@ -885,6 +957,7 @@ function App() {
       { type: "player_action", actionType: "bet", amount },
       "player_action:bet",
     );
+    playUiCue("action");
   };
   const handleAmountInputKeyDown = (event) => {
     if (event.key !== "Enter") return;
@@ -924,63 +997,26 @@ function App() {
     setBetPresetText(currentPresets.join(","));
   };
 
-  // Ref snapshot for window keydown listener (stable effect); must update when handlers/state change.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- functions are intentionally refreshed every render
-  useLayoutEffect(() => {
-    tableHotkeysRef.current = {
-      botActionMode,
-      roomState,
-      getBotDecision,
-      runBotStep,
-      isLocalTurn,
-      canCheckAction,
-      canCallAction,
-      canFoldAction,
-      canRaiseAction,
-      canBetAction,
-      submitCheck,
-      submitCall,
-      submitFold,
-      handleRaiseClick,
-      setShowPresetButtons,
-    };
+  useTableHotkeys({
+    botActionMode,
+    roomState,
+    getBotDecision,
+    runBotStep,
+    isLocalTurn,
+    canCheckAction,
+    canCallAction,
+    canFoldAction,
+    canRaiseAction,
+    canBetAction,
+    submitCheck,
+    submitCall,
+    submitFold,
+    handleRaiseClick,
+    setShowPresetButtons,
   });
 
   return (
     <main className={`table-page ${uiDensity === "comfort" ? "density-comfort" : "density-compact"}`}>
-      <header className="top-bar">
-        <div>
-          <h1>No Rake</h1>
-          <p className="sub">Ready-to-test table UI</p>
-        </div>
-        <div className="top-status">
-          <button
-            className="top-start-button"
-            disabled={!isSocketOpen || hasRound}
-            onClick={() => sendJson({ type: "start_round" }, "start_round")}
-          >
-            Start game
-          </button>
-          <span className={`status-badge status-${connectionState}`} title="WebSocket to game server">
-            {connectionStatusLabel}
-          </span>
-          <span className={`role-badge ${isHost ? "role-host" : "role-player"}`}>
-            {isHost ? "Role: Host" : "Role: Player"}
-          </span>
-          <span className={`bot-badge bot-${botState}`}>Bot: {botState}</span>
-          <button
-            className="top-density-button"
-            title="Switch stack display between big blinds (BB) and table chips"
-            onClick={() => setShowBbStacks((previous) => !previous)}
-          >
-            Stacks: {showBbStacks ? "BB" : "Chips"}
-          </button>
-          <button className="top-density-button" onClick={() => setUiDensity((previous) => (previous === "compact" ? "comfort" : "compact"))}>
-            Density: {uiDensity === "compact" ? "Compact" : "Comfort"}
-          </button>
-        </div>
-      </header>
-
       {connectionState !== "open" || lastServerError || sendBlockedNotice ? (
         <div
           className={`connection-banner ${
@@ -1050,6 +1086,71 @@ function App() {
       ) : null}
 
       <section className={`table-stage ${uiMotionPaused ? "motion-paused" : ""}`}>
+        <header className="top-bar top-bar-overlay">
+          <div className="top-branding">
+            <h1>No Rake</h1>
+          </div>
+          <div className="top-status">
+            <div className="top-status-badges">
+              <span className={`status-badge status-${connectionState}`} title="WebSocket to game server">
+                {connectionStatusLabel}
+              </span>
+              <span className={`role-badge ${isHost ? "role-host" : "role-player"}`}>
+                {isHost ? "Role: Host" : "Role: Player"}
+              </span>
+              <span className={`bot-badge bot-${botState}`}>Bot: {botState}</span>
+            </div>
+            <div className="top-game-menu">
+              <button
+                type="button"
+                className="top-start-button top-game-menu-toggle"
+                aria-expanded={showTopGameMenu}
+                aria-controls="top-game-menu-panel"
+                onClick={() => setShowTopGameMenu((previous) => !previous)}
+              >
+                Menu {showTopGameMenu ? "▲" : "▼"}
+              </button>
+              {showTopGameMenu ? (
+                <div id="top-game-menu-panel" className="top-game-menu-panel" role="region" aria-label="Game controls">
+                  <button
+                    className="top-start-button"
+                    disabled={!isSocketOpen || hasRound}
+                    onClick={() => {
+                      sendJson({ type: "start_round" }, "start_round");
+                      setShowTopGameMenu(false);
+                    }}
+                  >
+                    Start game
+                  </button>
+                  <button
+                    className="top-density-button"
+                    title="Toggle lightweight sound cues for actions, turns, and warnings"
+                    onClick={() => setSoundEnabled((previous) => !previous)}
+                  >
+                    SFX: {soundEnabled ? "On" : "Off"}
+                  </button>
+                  <button
+                    className="top-density-button"
+                    title="Switch stack display between big blinds (BB) and table chips"
+                    onClick={() => setShowBbStacks((previous) => !previous)}
+                  >
+                    Stacks: {showBbStacks ? "BB" : "Chips"}
+                  </button>
+                  <button
+                    className="top-density-button"
+                    onClick={() =>
+                      setUiDensity((previous) =>
+                        previous === "compact" ? "comfort" : "compact",
+                      )
+                    }
+                  >
+                    Density: {uiDensity === "compact" ? "Compact" : "Comfort"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </header>
         <div className="table-pov-shell">
           <div className="table-felt" onClick={() => setOpenSeatMenuSeat(null)}>
             <div className="table-felt-content">

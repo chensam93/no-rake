@@ -1,5 +1,10 @@
 /** Nudge dealer button from seat anchor toward table center (board) — reads like a live dealer puck. */
-function getDealerNudgeStyle(seatLayout) {
+const DEALER_BUTTON_SEAT_TWEAKS = {
+  // Hero/bottom seat: hard-shift left/up so it never collides with committed-bet marker.
+  1: { x: -34, y: -6 },
+};
+
+function getDealerNudgeStyle(seatLayout, seatNumber) {
   if (!seatLayout?.left || !seatLayout?.top) return undefined;
   const left = Number.parseFloat(seatLayout.left) / 100;
   const top = Number.parseFloat(seatLayout.top) / 100;
@@ -12,7 +17,10 @@ function getDealerNudgeStyle(seatLayout) {
   const scalePx = 26;
   const nx = (dx / len) * scalePx;
   const ny = (dy / len) * scalePx;
-  return { transform: `translate(${nx.toFixed(1)}px, ${ny.toFixed(1)}px)` };
+  const tweak = DEALER_BUTTON_SEAT_TWEAKS[seatNumber] ?? { x: 0, y: 0 };
+  return {
+    transform: `translate(${(nx + tweak.x).toFixed(1)}px, ${(ny + tweak.y).toFixed(1)}px)`,
+  };
 }
 
 export default function SeatNodesLayer({
@@ -104,7 +112,7 @@ export default function SeatNodesLayer({
                     {isDealer ? (
                       <div
                         className="seat-node-dealer-slot"
-                        style={getDealerNudgeStyle(seatLayout)}
+                        style={getDealerNudgeStyle(seatLayout, seat)}
                       >
                         <span className="dealer-button">D</span>
                       </div>
