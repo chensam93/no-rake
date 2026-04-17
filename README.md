@@ -68,6 +68,20 @@ Current hand/street behavior:
 - combined server rules checks: `npm run test:rules -w server`
 - client bot-decision logic check: `npm run test:bot-decision -w client`
 
+## Secret scanning
+
+- local pre-commit hook lives at `.githooks/pre-commit`
+- CI scan runs in `.github/workflows/secret-scan.yml`
+- gitleaks config lives at `.gitleaks.toml`
+
+One-time local setup in this repo:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Optional (better local detection): install `gitleaks` so the hook runs `gitleaks protect --staged` instead of fallback regex scanning.
+
 ## Deploy and operations
 
 - deployment checklist and troubleshooting runbook: `docs/deploy_runbook.md`
