@@ -118,6 +118,8 @@ async function main() {
         console.log("[suite] Reusing existing server on :3000.");
       }
 
+      await runCommand("lifecycle", ["run", "verify:lifecycle-guards", "-w", "server"]);
+      await runCommand("host-admin", ["run", "verify:host-admin", "-w", "server"]);
       await runCommand("simulate", ["run", "simulate:round", "-w", "server"]);
       await runCommand("smoke", ["run", "smoke:two-player", "-w", "server"]);
     }

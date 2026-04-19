@@ -214,6 +214,53 @@ export function createTableControlHandlers(context) {
     context.publishRoomState(session.roomId);
   }
 
+  function handleEndGame(socket, session) {
+    const room = getHostRoom(socket, session, "end game");
+    if (!room) return;
+
+    context.clearAutoStartTimer(room);
+    if (typeof context.clearServerBotTimer === "function") {
+      context.clearServerBotTimer(room);
+    }
+
+    room.table.dealerSeatNumber = null;
+
+    room.hand.inProgress = false;
+    room.hand.street = null;
+    room.hand.board = [];
+    room.hand.deck = [];
+    room.hand.pot = 0;
+    room.hand.turnSeatNumber = null;
+    room.hand.dealerSeatNumber = null;
+    room.hand.smallBlindSeatNumber = null;
+    room.hand.bigBlindSeatNumber = null;
+    room.hand.foldedSeatNumbers.clear();
+    room.hand.pendingSeatNumbers.clear();
+    room.hand.raiseClosedSeatNumbers.clear();
+    room.hand.actionLog = [];
+    room.hand.currentBet = 0;
+    room.hand.minRaiseTo = null;
+    room.hand.lastEndReason = null;
+    room.hand.lastWinnerSeatNumber = null;
+    room.hand.lastWinnerSeatNumbers = [];
+    room.hand.lastPayouts = [];
+    room.hand.lastShowdown = null;
+    room.hand.lastPotBreakdown = [];
+
+    for (const player of room.playersBySocket.values()) {
+      player.stack = context.STARTING_STACK;
+      player.committedThisStreet = 0;
+      player.committedThisHand = 0;
+      player.holeCards = [];
+    }
+
+    context.sendJson(socket, {
+      type: "game_reset",
+      roomId: session.roomId,
+    });
+    context.publishRoomState(session.roomId);
+  }
+
   function handleSetServerBot(socket, session, parsed) {
     const room = getHostRoom(socket, session, "change server bot seat");
     if (!room) return;
@@ -301,6 +348,7 @@ export function createTableControlHandlers(context) {
     handleSetManualStepMode,
     handleStepProgress,
     handleStartRound,
+    handleEndGame,
     handleSetServerBot,
     handleSetServerBotProfile,
     handleSetServerBotSeed,

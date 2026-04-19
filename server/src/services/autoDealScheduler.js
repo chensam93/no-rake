@@ -5,6 +5,20 @@ export function clearAutoStartTimer(room) {
   }
 }
 
+function broadcastGameOver(room, context, reason) {
+  if (typeof context.sendJson !== "function") return;
+  const payload = {
+    type: "game_over",
+    roomId: room.id,
+    reason,
+  };
+  for (const member of room.members) {
+    if (member.readyState === 1) {
+      context.sendJson(member, payload);
+    }
+  }
+}
+
 export function maybeScheduleAutoStart(room, reason, context) {
   clearAutoStartTimer(room);
 
@@ -14,6 +28,17 @@ export function maybeScheduleAutoStart(room, reason, context) {
   if (!room.table.autoDealEnabled) return;
   if (room.table.manualStepMode) return;
   if (context.getSeatedPlayers(room).length < 2) return;
+
+  const chipEligibleCount =
+    typeof context.getChipEligibleSeatedPlayers === "function"
+      ? context.getChipEligibleSeatedPlayers(room).length
+      : context
+          .getSeatedPlayers(room)
+          .filter((player) => Number(player.stack ?? 0) > 0).length;
+  if (chipEligibleCount < 2) {
+    broadcastGameOver(room, context, "insufficient_chips");
+    return;
+  }
 
   const delayMs = room.table.autoDealDelayMs ?? 1800;
   room.autoStartTimer = setTimeout(() => {
@@ -25,7 +50,12 @@ export function maybeScheduleAutoStart(room, reason, context) {
     if (room.table.manualStepMode) return;
 
     const result = context.startRound(room);
-    if (!result.ok) return;
+    if (!result.ok) {
+      if (result.code === "insufficient_chips") {
+        broadcastGameOver(room, context, "insufficient_chips");
+      }
+      return;
+    }
 
     for (const member of room.members) {
       if (member.readyState === 1) {

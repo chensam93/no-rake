@@ -10,6 +10,7 @@ import { rooms, getOrCreateRoom, getRoom, removeSocketFromRoom } from "./service
 import {
   getActionEligibleSeatNumbers,
   getActiveSeatNumbers,
+  getChipEligibleSeatedPlayers,
   getNextActiveSeatAfter,
   getNextPendingTurnSeatNumber,
   getNextSeatInList,
@@ -41,6 +42,7 @@ const maybeScheduleWithContext = (room, reason = null) =>
   maybeScheduleAutoStart(room, reason, {
     rooms,
     getSeatedPlayers,
+    getChipEligibleSeatedPlayers,
     startRound: (targetRoom) => startRoundRef(targetRoom),
     maybeScheduleServerBotAction: (targetRoom) => serverBotService.maybeScheduleBotAction(targetRoom),
     sendJson,
@@ -62,6 +64,7 @@ const roundLifecycle = createRoundLifecycle({
   finishRoundWithWinners: showdownService.finishRoundWithWinners,
   getActionEligibleSeatNumbers,
   getActiveSeatNumbers,
+  getChipEligibleSeatedPlayers,
   getNextActiveSeatAfter,
   getNextPendingTurnSeatNumber,
   getNextSeatInList,

@@ -11,6 +11,10 @@ export function getSeatedPlayers(room) {
   return getSortedPlayers(room).filter((player) => player.seatNumber !== null);
 }
 
+export function getChipEligibleSeatedPlayers(room) {
+  return getSeatedPlayers(room).filter((player) => Number(player.stack ?? 0) > 0);
+}
+
 export function getPlayerBySeatNumber(room, seatNumber) {
   for (const player of room.playersBySocket.values()) {
     if (player.seatNumber === seatNumber) {

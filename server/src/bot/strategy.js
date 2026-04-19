@@ -152,6 +152,45 @@ function chooseAggressiveTarget(state, range, rng) {
   return chooseTargetByPotFraction(state, range, selected.fraction);
 }
 
+function getPostflopOrder(activeSeatNumbers, dealerSeatNumber) {
+  if (!Array.isArray(activeSeatNumbers) || activeSeatNumbers.length === 0) return [];
+  const sortedSeats = [...new Set(activeSeatNumbers)]
+    .map((seat) => Number(seat))
+    .filter((seat) => Number.isInteger(seat))
+    .sort((left, right) => left - right);
+  if (sortedSeats.length <= 1) return sortedSeats;
+  if (!Number.isInteger(dealerSeatNumber)) return sortedSeats;
+
+  const leftOfDealer = sortedSeats.find((seat) => seat > dealerSeatNumber) ?? sortedSeats[0];
+  const startIndex = sortedSeats.indexOf(leftOfDealer);
+  if (startIndex < 0) return sortedSeats;
+  return [...sortedSeats.slice(startIndex), ...sortedSeats.slice(0, startIndex)];
+}
+
+function isOutOfPositionVsAggressor(state) {
+  if (!state || !Number.isInteger(state.lastAggressorSeatNumber)) return false;
+  if (!Array.isArray(state.activeSeatNumbers) || state.activeSeatNumbers.length < 2) return false;
+  const order = getPostflopOrder(state.activeSeatNumbers, state.dealerSeatNumber);
+  const botIndex = order.indexOf(state.seatNumber);
+  const aggressorIndex = order.indexOf(state.lastAggressorSeatNumber);
+  if (botIndex < 0 || aggressorIndex < 0) return false;
+  return botIndex < aggressorIndex;
+}
+
+function choosePreflopReraiseTarget(state, range, profile) {
+  const bigBlind = Math.max(1, Number(state.bigBlind ?? 20));
+  const isFacingRaise =
+    Number(state.currentBet ?? 0) > bigBlind && Number(state.currentBet ?? 0) > Number(state.committedThisStreet ?? 0);
+  if (!isFacingRaise) return null;
+
+  const isOutOfPosition = isOutOfPositionVsAggressor(state);
+  const baseMultiplier = isOutOfPosition ? 4.3 : 3.5;
+  const profileAdjustment = (Number(profile.aggression ?? 0.55) - 0.55) * 0.8;
+  const targetMultiplier = Math.max(3.2, baseMultiplier + profileAdjustment);
+  const rawTarget = Math.round(Number(state.currentBet ?? 0) * targetMultiplier);
+  return Math.max(range.minTarget, Math.min(range.maxTarget, rawTarget));
+}
+
 export function chooseBaselineBotAction(state, rng) {
   if (!state || !state.inProgress || !state.isBotTurn) return null;
 
@@ -198,6 +237,12 @@ export function chooseBaselineBotAction(state, rng) {
   if (!chosen) return { actionType: canCheck ? "check" : canCall ? "call" : "fold" };
 
   if (chosen.actionType === "bet" || chosen.actionType === "raise_to") {
+    if (state.street === "preflop" && chosen.actionType === "raise_to") {
+      const preflopReraiseTarget = choosePreflopReraiseTarget(state, range, profile);
+      if (preflopReraiseTarget !== null) {
+        return { actionType: chosen.actionType, amount: preflopReraiseTarget };
+      }
+    }
     const target = chooseAggressiveTarget(state, range, rng);
     return { actionType: chosen.actionType, amount: target };
   }

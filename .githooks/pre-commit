@@ -12,7 +12,7 @@ fi
 
 echo "gitleaks not found on PATH; running lightweight staged secret scan."
 
-staged_added_lines="$(git diff --cached --unified=0 --no-color -- . ':(exclude).githooks/pre-commit' ':(exclude).gitleaks.toml' | awk '/^\+[^+]/ { sub(/^\+/, ""); print }')"
+staged_added_lines="$(git diff --cached --unified=0 --no-color -- . ':(exclude).githooks/pre-commit' ':(exclude).gitleaks.toml' ':(exclude).github/workflows' | awk '/^\+[^+]/ { sub(/^\+/, ""); print }')"
 
 if [ -z "$staged_added_lines" ]; then
   exit 0

@@ -1,3 +1,4 @@
+import { createHostAdminHandlers } from "./handlers/hostAdminHandlers.js";
 import { createPlayerActionHandlers } from "./handlers/playerActionHandlers.js";
 import { createSessionHandlers } from "./handlers/sessionHandlers.js";
 import { createTableControlHandlers } from "./handlers/tableControlHandlers.js";
@@ -5,6 +6,7 @@ import { createTableControlHandlers } from "./handlers/tableControlHandlers.js";
 export function createMessageRouter(context) {
   const sessionHandlers = createSessionHandlers(context);
   const tableControlHandlers = createTableControlHandlers(context);
+  const hostAdminHandlers = createHostAdminHandlers(context);
   const playerActionHandlers = createPlayerActionHandlers(context);
 
   function sendHello(socket) {
@@ -15,11 +17,15 @@ export function createMessageRouter(context) {
         "join_room",
         "sit_down",
         "start_round",
+        "end_game",
         "set_auto_deal",
         "set_server_bot",
         "set_server_bot_profile",
         "set_server_bot_seed",
         "set_server_bot_delay",
+        "host_adjust_stack",
+        "host_move_player",
+        "host_kick_player",
         "player_action:check/call/fold/bet/raise_to",
         "ping-*",
       ],
@@ -89,6 +95,26 @@ export function createMessageRouter(context) {
 
     if (parsed.type === "start_round") {
       tableControlHandlers.handleStartRound(socket, session, parsed);
+      return;
+    }
+
+    if (parsed.type === "end_game") {
+      tableControlHandlers.handleEndGame(socket, session, parsed);
+      return;
+    }
+
+    if (parsed.type === "host_adjust_stack") {
+      hostAdminHandlers.handleAdjustStack(socket, session, parsed);
+      return;
+    }
+
+    if (parsed.type === "host_move_player") {
+      hostAdminHandlers.handleMovePlayer(socket, session, parsed);
+      return;
+    }
+
+    if (parsed.type === "host_kick_player") {
+      hostAdminHandlers.handleKickPlayer(socket, session, parsed);
       return;
     }
 

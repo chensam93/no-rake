@@ -93,6 +93,14 @@ async function run() {
   await sleep(120);
   send(alice, { type: "set_auto_deal", enabled: false, delayMs: 1800 }, "set_auto_deal off");
   await sleep(120);
+  const preRoundState = await waitFor(() => {
+    const state = latestState(alice);
+    if (!state) return null;
+    if (state.round?.inProgress) return null;
+    if (!Array.isArray(state.players) || state.players.length !== 2) return null;
+    return state;
+  });
+  const startingStack = preRoundState.players[0]?.stack ?? 1000;
   send(alice, { type: "start_round" }, "start_round");
 
   const roundStartedState = await waitFor(() => {
@@ -126,6 +134,25 @@ async function run() {
   const ended = await waitForRoundEnded(alice);
   if (!ended.winnerSeatNumber || !Array.isArray(ended.payouts)) {
     throw new Error("invalid round_ended payload");
+  }
+
+  send(alice, { type: "end_game" }, "end_game");
+  const resetState = await waitFor(() => {
+    const state = latestState(alice);
+    if (!state) return null;
+    if (state.round?.inProgress) return null;
+    if (state.round?.street !== null) return null;
+    if ((state.round?.pot ?? 0) !== 0) return null;
+    if (state.round?.dealerSeatNumber !== null) return null;
+    return state;
+  });
+  const resetPlayers = Array.isArray(resetState.players) ? resetState.players : [];
+  assert(resetPlayers.length === 2, "expected two seated players after reset");
+  for (const player of resetPlayers) {
+    assert(player.stack === startingStack, "end_game should restore starting stack");
+    assert((player.committedThisStreet ?? 0) === 0, "end_game should clear street commitment");
+    assert((player.committedThisHand ?? 0) === 0, "end_game should clear hand commitment");
+    assert((player.holeCards ?? []).length === 0, "end_game should clear hole cards");
   }
 
   console.log("smoke-two-player: passed");

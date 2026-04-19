@@ -65,6 +65,18 @@ export function createRoundLifecycle(context) {
       return { ok: false, message: "need at least 2 seated players" };
     }
 
+    const chipEligibleCount =
+      typeof context.getChipEligibleSeatedPlayers === "function"
+        ? context.getChipEligibleSeatedPlayers(room).length
+        : seatedPlayers.filter((player) => Number(player.stack ?? 0) > 0).length;
+    if (chipEligibleCount < 2) {
+      return {
+        ok: false,
+        code: "insufficient_chips",
+        message: "need at least 2 players with chips to start a new hand",
+      };
+    }
+
     context.clearAutoStartTimer(room);
 
     const seatedSeatNumbers = seatedPlayers.map((player) => player.seatNumber);

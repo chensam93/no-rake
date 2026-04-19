@@ -40,6 +40,7 @@ function readStoredSfxEnabled() {
     return true;
   }
 }
+
 /* Percent positions on felt; edge seats nudged inward so spacing to oval rim is more even */
 const SEAT_LAYOUT = {
   1: { top: "88%", left: "50%" },
@@ -195,6 +196,8 @@ function App() {
   const previousTurnSeatRef = useRef(null);
   const previousConnectionStateRef = useRef(null);
   const previousLastEndReasonRef = useRef(null);
+  const previousActionDrawerModeRef = useRef("closed");
+  const raiseEditStartAmountRef = useRef(null);
   const soundEnabledRef = useRef(readStoredSfxEnabled());
   const [connectionState, setConnectionState] = useState("connecting");
   const [botState, setBotState] = useState("off");
@@ -205,7 +208,10 @@ function App() {
   const [playerName, setPlayerName] = useState("player");
   const [seatNumber, setSeatNumber] = useState(1);
   const [amount, setAmount] = useState(40);
-  const [showRaiseSlider, setShowRaiseSlider] = useState(false);
+  const [actionDrawerMode, setActionDrawerMode] = useState("closed");
+  /** Preflop slider: "editDefault" saves preset only; "raise" commits raise_to on confirm. */
+  const [raiseSliderIntent, setRaiseSliderIntent] = useState(null);
+  const [preflopRaiseOverride, setPreflopRaiseOverride] = useState(null);
   const [betPresetText, setBetPresetText] = useState(DEFAULT_BET_PRESET_TEXT);
   const quickMode = DEFAULT_QUICK_MODE;
   const [botActionMode, setBotActionMode] = useState("auto");
@@ -214,7 +220,6 @@ function App() {
   const [showBbStacks, setShowBbStacks] = useState(true);
   const [showAdvancedHandInfo, setShowAdvancedHandInfo] = useState(false);
   const [showHandLog, setShowHandLog] = useState(false);
-  const [showPresetButtons, setShowPresetButtons] = useState(false);
   const [showTopGameMenu, setShowTopGameMenu] = useState(false);
   const [preflopOpenBbMultiple] = useState(readStoredPreflopOpenBbMultiple);
   const [showDevTools, setShowDevTools] = useState(false);
@@ -246,7 +251,6 @@ function App() {
       // ignore storage failures
     }
   }, [soundEnabled]);
-
   const playUiCue = useCallback((cueType) => {
     if (!soundEnabledRef.current) return;
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -452,6 +456,49 @@ function App() {
         });
         playUiCue("error");
       }
+
+      if (parsed.type === "game_reset") {
+        appendEvent("[game] reset to initial table state");
+        playUiCue("action");
+      }
+
+      if (parsed.type === "game_over") {
+        appendEvent(`[game] over (${parsed.reason ?? "unspecified"})`);
+        playUiCue("round_end");
+      }
+
+      if (parsed.type === "host_stack_adjusted") {
+        const deltaNote =
+          parsed.mode === "delta"
+            ? `${parsed.amount >= 0 ? "+" : ""}${parsed.amount}`
+            : `→ ${parsed.stack}`;
+        appendEvent(
+          `[host] stack seat ${parsed.seatNumber} ${deltaNote} (now ${parsed.stack})`,
+        );
+        playUiCue("action");
+      }
+
+      if (parsed.type === "host_player_moved") {
+        appendEvent(
+          `[host] moved seat ${parsed.fromSeatNumber} ↔ seat ${parsed.toSeatNumber}${parsed.swapped ? " (swap)" : ""}`,
+        );
+        playUiCue("action");
+      }
+
+      if (parsed.type === "host_player_kicked") {
+        const who = parsed.playerName || `seat ${parsed.seatNumber}`;
+        appendEvent(`[host] kicked ${who} (${parsed.kind ?? "player"})`);
+        playUiCue("error");
+      }
+
+      if (parsed.type === "kicked") {
+        appendEvent(`[server] you were kicked (${parsed.reason ?? "kicked_by_host"})`);
+        setLastServerError({
+          message: "You were removed from the room by the host.",
+          category: "session",
+        });
+        playUiCue("error");
+      }
     };
 
     return () => {
@@ -525,10 +572,17 @@ function App() {
     ? localCommittedThisStreet + Math.max(0, localPlayer.stack ?? 0)
     : raiseMinTarget;
   const raiseStep = Math.max(1, Math.round(blindUnitValue / 2));
+  const raiseNudgeBbValue = raiseStep / Math.max(1, blindUnitValue);
+  const raiseNudgeBbLabel = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: raiseNudgeBbValue % 1 === 0 ? 0 : 1,
+    maximumFractionDigits: 2,
+  }).format(raiseNudgeBbValue);
   const canRaiseAction =
     canActNow && (round.currentBet ?? 0) > 0 && raiseMaxTarget >= raiseMinTarget;
   const isPreflopStreet = round.street === "preflop";
-  const preflopRaiseTarget =
+  const isOpenRaiseSituation =
+    isPreflopStreet && canRaiseAction && (round.currentBet ?? 0) <= blindUnitValue;
+  const recommendedPreflopRaiseTarget =
     isPreflopStreet && canRaiseAction
       ? getRecommendedPreflopRaiseTo({
           bigBlind: blindUnitValue,
@@ -538,11 +592,42 @@ function App() {
           openBbMultiple: preflopOpenBbMultiple,
         })
       : null;
-  const preflopRaiseUi = Boolean(isPreflopStreet && canRaiseAction);
+  const isPreflopOverrideValid =
+    isOpenRaiseSituation &&
+    Number.isFinite(preflopRaiseOverride) &&
+    preflopRaiseOverride >= raiseMinTarget &&
+    preflopRaiseOverride <= raiseMaxTarget;
+  const preflopRaiseTarget = isPreflopOverrideValid
+    ? preflopRaiseOverride
+    : recommendedPreflopRaiseTarget;
+  const preflopRaiseUi = isOpenRaiseSituation;
+  const nonOpenRaiseTarget = canRaiseAction
+    ? Math.max(
+        raiseMinTarget,
+        Math.min(
+          raiseMaxTarget,
+          Math.round(
+            Number.isFinite(recommendedPreflopRaiseTarget)
+              ? recommendedPreflopRaiseTarget
+              : raiseMinTarget,
+          ),
+        ),
+      )
+    : raiseMinTarget;
   const preflopSizingHint =
     (round.currentBet ?? 0) <= blindUnitValue
       ? `${preflopOpenBbMultiple}×BB`
       : "3× facing";
+  const smallBlindValue = Math.max(1, Number(round.smallBlind ?? table.smallBlind ?? blindUnitValue / 2));
+  const formatAmountForWidget = (chipValue) => {
+    const safeValue = Math.max(0, Number(chipValue) || 0);
+    if (!showBbStacks) return formatChipCount(safeValue);
+    const bbValue = safeValue / Math.max(1, blindUnitValue);
+    return `${new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: bbValue % 1 === 0 ? 0 : 1,
+      maximumFractionDigits: 2,
+    }).format(bbValue)} BB`;
+  };
   const showAmountControls = canBetAction || canRaiseAction;
   const isHost = Boolean(playerName && table.hostPlayerName === playerName);
   const autoDealEnabled = table.autoDealEnabled !== false;
@@ -578,24 +663,6 @@ function App() {
     amount,
     raiseMinTarget,
     raiseMaxTarget,
-  );
-  const raiseQuarterAmount = getRaiseAmountFromSliderPosition(
-    25,
-    raiseMinTarget,
-    raiseMaxTarget,
-    raiseStep,
-  );
-  const raiseMiddleAmount = getRaiseAmountFromSliderPosition(
-    50,
-    raiseMinTarget,
-    raiseMaxTarget,
-    raiseStep,
-  );
-  const raiseThreeQuarterAmount = getRaiseAmountFromSliderPosition(
-    75,
-    raiseMinTarget,
-    raiseMaxTarget,
-    raiseStep,
   );
   const heroLastAction =
     localSeatNumber !== null
@@ -680,6 +747,51 @@ function App() {
     }
     previousLastEndReasonRef.current = currentLastEndReason;
   }, [hasRound, playUiCue, round.lastEndReason]);
+  useEffect(() => {
+    if (!hasRound || !canActNow) {
+      setActionDrawerMode("closed");
+    }
+  }, [hasRound, canActNow]);
+  useEffect(() => {
+    if (actionDrawerMode !== "slider") {
+      setRaiseSliderIntent(null);
+    }
+  }, [actionDrawerMode]);
+  useEffect(() => {
+    if (preflopRaiseOverride === null) return;
+    if (!isOpenRaiseSituation) {
+      setPreflopRaiseOverride(null);
+      return;
+    }
+    if (
+      !Number.isFinite(preflopRaiseOverride) ||
+      preflopRaiseOverride < raiseMinTarget ||
+      preflopRaiseOverride > raiseMaxTarget
+    ) {
+      setPreflopRaiseOverride(null);
+    }
+  }, [
+    preflopRaiseOverride,
+    isOpenRaiseSituation,
+    raiseMinTarget,
+    raiseMaxTarget,
+  ]);
+  useEffect(() => {
+    const previousMode = previousActionDrawerModeRef.current;
+    const sliderJustOpened = previousMode !== "slider" && actionDrawerMode === "slider";
+    const sliderJustClosed = previousMode === "slider" && actionDrawerMode !== "slider";
+    if (sliderJustOpened) {
+      const startingAmount = Math.max(
+        raiseMinTarget,
+        Math.min(raiseMaxTarget, Math.round(Number(amount) || raiseMinTarget)),
+      );
+      raiseEditStartAmountRef.current = startingAmount;
+    }
+    if (sliderJustClosed) {
+      raiseEditStartAmountRef.current = null;
+    }
+    previousActionDrawerModeRef.current = actionDrawerMode;
+  }, [actionDrawerMode, amount, raiseMinTarget, raiseMaxTarget]);
 
   const applyBetPreset = (percent) => {
     const pot = Math.max(1, Number(round.pot ?? 0));
@@ -690,7 +802,8 @@ function App() {
     }
     if (currentBet > 0 && localPlayer) {
       nextAmount = Math.min(raiseMaxTarget, Math.max(raiseMinTarget, nextAmount));
-      setShowRaiseSlider(true);
+      setRaiseSliderIntent("raise");
+      setActionDrawerMode("slider");
     }
     setAmount(nextAmount);
     if (canBetAction) {
@@ -699,46 +812,60 @@ function App() {
         "player_action:bet",
       );
       playUiCue("action");
-      setShowPresetButtons(false);
+      setActionDrawerMode("closed");
     }
   };
 
-  const handleRaiseClick = () => {
+  /** Open raise sizing (slider); preflop open uses a separate one-tap default raise. */
+  const handleRaiseOpenSizing = () => {
     if (!canRaiseAction) return;
-    if (preflopRaiseUi && preflopRaiseTarget !== null) {
-      if (showRaiseSlider) {
-        const clampedAmount = Math.max(raiseMinTarget, Math.min(raiseMaxTarget, Math.round(amount)));
-        sendJson(
-          { type: "player_action", actionType: "raise_to", amount: clampedAmount },
-          "player_action:raise_to",
-        );
-        playUiCue("action");
-        setShowRaiseSlider(false);
-        setShowPresetButtons(false);
-        return;
-      }
-      sendJson(
-        { type: "player_action", actionType: "raise_to", amount: preflopRaiseTarget },
-        "player_action:raise_to",
-      );
-      playUiCue("action");
-      return;
+    const initialAmount = Math.max(
+      raiseMinTarget,
+      Math.min(
+        raiseMaxTarget,
+        Math.round(Number.isFinite(preflopRaiseTarget) ? preflopRaiseTarget : nonOpenRaiseTarget),
+      ),
+    );
+    setRaiseSliderIntent("raise");
+    setAmount(initialAmount);
+    setActionDrawerMode("slider");
+  };
+
+  const handlePreflopEditDefaultSizing = () => {
+    if (!canRaiseAction || !preflopRaiseUi) return;
+    const initialAmount = Math.max(
+      raiseMinTarget,
+      Math.min(
+        raiseMaxTarget,
+        Math.round(Number(preflopRaiseTarget ?? raiseMinTarget) || raiseMinTarget),
+      ),
+    );
+    setRaiseSliderIntent("editDefault");
+    setAmount(initialAmount);
+    setActionDrawerMode("slider");
+  };
+
+  /** Preflop open-raise: send recommended / overridden size in one tap. */
+  const handlePreflopRaiseDefault = () => {
+    if (!canRaiseAction || !preflopRaiseUi) return;
+    const rawTarget = preflopRaiseTarget ?? raiseMinTarget;
+    if (!Number.isFinite(rawTarget)) return;
+    const clampedAmount = Math.max(raiseMinTarget, Math.min(raiseMaxTarget, Math.round(rawTarget)));
+    sendJson(
+      { type: "player_action", actionType: "raise_to", amount: clampedAmount },
+      "player_action:raise_to:preflop_default",
+    );
+    playUiCue("action");
+    setActionDrawerMode("closed");
+  };
+
+  const handleRaiseHotkey = () => {
+    if (!canRaiseAction) return;
+    if (preflopRaiseUi) {
+      handlePreflopRaiseDefault();
+    } else {
+      handleRaiseOpenSizing();
     }
-    const clampedAmount = Math.max(raiseMinTarget, Math.min(raiseMaxTarget, Math.round(amount)));
-    if (showRaiseSlider) {
-      sendJson(
-        { type: "player_action", actionType: "raise_to", amount: clampedAmount },
-        "player_action:raise_to",
-      );
-      playUiCue("action");
-      setShowRaiseSlider(false);
-      setShowPresetButtons(false);
-      return;
-    }
-    if (clampedAmount !== amount) {
-      setAmount(clampedAmount);
-    }
-    setShowRaiseSlider(true);
   };
 
   const handleRaiseSliderChange = (value) => {
@@ -765,13 +892,45 @@ function App() {
     setAmount(
       Math.min(raiseMaxTarget, Math.max(raiseMinTarget, Math.round((round.pot ?? 0) / 2))),
     );
+  const handleThreeQuarterPotRaise = () =>
+    setAmount(
+      Math.min(raiseMaxTarget, Math.max(raiseMinTarget, Math.round(((round.pot ?? 0) * 3) / 4))),
+    );
   const handlePotRaise = () =>
     setAmount(Math.min(raiseMaxTarget, Math.max(raiseMinTarget, Math.round(round.pot ?? 0))));
   const handleSetMinRaise = () => setAmount(raiseMinTarget);
   const handleSetAllInRaise = () => setAmount(raiseMaxTarget);
+  const confirmRaiseSizeEdit = () => {
+    const clampedAmount = Math.max(
+      raiseMinTarget,
+      Math.min(raiseMaxTarget, Math.round(Number(amount) || raiseMinTarget)),
+    );
+    if (raiseSliderIntent === "editDefault" && preflopRaiseUi) {
+      setPreflopRaiseOverride(clampedAmount);
+      setActionDrawerMode("closed");
+      return;
+    }
+    if (preflopRaiseUi) {
+      setPreflopRaiseOverride(clampedAmount);
+    }
+    if (canRaiseAction) {
+      sendJson(
+        { type: "player_action", actionType: "raise_to", amount: clampedAmount },
+        "player_action:raise_to",
+      );
+      playUiCue("action");
+    }
+    setActionDrawerMode("closed");
+  };
+  const cancelRaiseSizeEdit = () => {
+    const startingAmount = raiseEditStartAmountRef.current;
+    if (Number.isFinite(startingAmount)) {
+      setAmount(Math.max(raiseMinTarget, Math.min(raiseMaxTarget, Math.round(startingAmount))));
+    }
+    setActionDrawerMode("closed");
+  };
   const closeActionPanels = () => {
-    setShowRaiseSlider(false);
-    setShowPresetButtons(false);
+    setActionDrawerMode("closed");
   };
   const submitCheck = () => {
     closeActionPanels();
@@ -787,33 +946,6 @@ function App() {
     closeActionPanels();
     sendJson({ type: "player_action", actionType: "fold" }, "player_action:fold");
     playUiCue("action");
-  };
-  const submitBet = () => {
-    closeActionPanels();
-    sendJson(
-      { type: "player_action", actionType: "bet", amount },
-      "player_action:bet",
-    );
-    playUiCue("action");
-  };
-  const handleAmountInputKeyDown = (event) => {
-    if (event.key !== "Enter") return;
-    if (!canActNow) return;
-    event.preventDefault();
-    if (canBetAction) {
-      submitBet();
-      return;
-    }
-    if (!canRaiseAction) return;
-    if (preflopRaiseUi && preflopRaiseTarget !== null && !showRaiseSlider) {
-      handleRaiseClick();
-      return;
-    }
-    if (!showRaiseSlider) {
-      setShowRaiseSlider(true);
-      return;
-    }
-    handleRaiseClick();
   };
   const editBetPresetAtIndex = (index) => {
     const currentPresets = parseBetPresetPercentages(betPresetText);
@@ -832,6 +964,51 @@ function App() {
     const normalized = Math.round(nextValue * 10) / 10;
     currentPresets[index] = normalized;
     setBetPresetText(currentPresets.join(","));
+  };
+  const handleStartGame = () => {
+    sendJson({ type: "start_round" }, "start_round");
+    setShowTopGameMenu(false);
+  };
+  const handleHostAdjustStack = ({ seatNumber: targetSeat, mode, amount }) => {
+    if (!isHost) return;
+    if (!Number.isInteger(targetSeat)) return;
+    const normalizedAmount = Number(amount);
+    if (!Number.isFinite(normalizedAmount)) return;
+    sendJson(
+      {
+        type: "host_adjust_stack",
+        seatNumber: targetSeat,
+        mode: mode === "delta" ? "delta" : "set",
+        amount: Math.trunc(normalizedAmount),
+      },
+      `host_adjust_stack seat=${targetSeat} ${mode}=${normalizedAmount}`,
+    );
+  };
+  const handleHostMovePlayer = ({ fromSeatNumber, toSeatNumber }) => {
+    if (!isHost) return;
+    if (!Number.isInteger(fromSeatNumber) || !Number.isInteger(toSeatNumber)) return;
+    if (fromSeatNumber === toSeatNumber) return;
+    sendJson(
+      {
+        type: "host_move_player",
+        fromSeatNumber,
+        toSeatNumber,
+      },
+      `host_move_player ${fromSeatNumber}->${toSeatNumber}`,
+    );
+    setOpenSeatMenuSeat(null);
+  };
+  const handleHostKickPlayer = ({ seatNumber: targetSeat, playerName: targetName }) => {
+    if (!isHost) return;
+    if (!Number.isInteger(targetSeat)) return;
+    const label = targetName ? `${targetName} (seat ${targetSeat})` : `seat ${targetSeat}`;
+    const shouldKick = window.confirm(`Kick ${label}?`);
+    if (!shouldKick) return;
+    sendJson(
+      { type: "host_kick_player", seatNumber: targetSeat },
+      `host_kick_player seat=${targetSeat}`,
+    );
+    setOpenSeatMenuSeat(null);
   };
   const getBotDecision = () =>
     botActionMode === "step" && isBotTurn
@@ -852,8 +1029,15 @@ function App() {
     submitCheck,
     submitCall,
     submitFold,
-    handleRaiseClick,
-    setShowPresetButtons,
+    handleRaiseHotkey,
+    setShowPresetButtons: (updater) => {
+      if (!canBetAction) return;
+      setActionDrawerMode((previousMode) => {
+        const previousOpen = previousMode === "presets";
+        const nextOpen = typeof updater === "function" ? updater(previousOpen) : Boolean(updater);
+        return nextOpen ? "presets" : "closed";
+      });
+    },
   });
 
   return (
@@ -928,23 +1112,35 @@ function App() {
 
       <section className={`table-stage ${uiMotionPaused ? "motion-paused" : ""}`}>
         <header className="top-bar top-bar-overlay">
-          <div className="top-branding">
-            <h1>No Rake</h1>
+          <div
+            className={`top-branding top-branding-status top-branding-status-${connectionState}`}
+            title={`Server: ${connectionStatusLabel}`}
+            role="status"
+            aria-live="polite"
+          >
+            <h1>
+              <span className="top-branding-text">No Rake</span>
+              <span
+                className="top-branding-status-dot"
+                aria-label={`Server status: ${connectionStatusLabel}`}
+              />
+            </h1>
           </div>
           <div className="top-status">
             <div className="top-status-badges">
-              <span className={`status-badge status-${connectionState}`} title="WebSocket to game server">
-                {connectionStatusLabel}
-              </span>
               <span className={`role-badge ${isHost ? "role-host" : "role-player"}`}>
                 {isHost ? "Role: Host" : "Role: Player"}
               </span>
-              <span className={`bot-badge bot-${botState}`}>
-                Bot: {botState}
-                {isBotOpen ? ` (${botProfile})` : ""}
-              </span>
             </div>
             <div className="top-game-menu">
+              <button
+                type="button"
+                className="top-start-button top-game-start-direct"
+                disabled={!isSocketOpen || hasRound || !isHost}
+                onClick={handleStartGame}
+              >
+                Start game
+              </button>
               <button
                 type="button"
                 className="top-start-button top-game-menu-toggle"
@@ -957,14 +1153,18 @@ function App() {
               {showTopGameMenu ? (
                 <div id="top-game-menu-panel" className="top-game-menu-panel" role="region" aria-label="Game controls">
                   <button
-                    className="top-start-button"
-                    disabled={!isSocketOpen || hasRound}
+                    className="top-density-button"
+                    disabled={!isSocketOpen || !isHost}
                     onClick={() => {
-                      sendJson({ type: "start_round" }, "start_round");
+                      const shouldReset = window.confirm(
+                        "End game and reset table to initial state?",
+                      );
+                      if (!shouldReset) return;
+                      sendJson({ type: "end_game" }, "end_game");
                       setShowTopGameMenu(false);
                     }}
                   >
-                    Start game
+                    End game (reset)
                   </button>
                   <button
                     className="top-density-button"
@@ -1001,6 +1201,10 @@ function App() {
             <TableCenterBoard
               potValue={round.pot ?? 0}
               potChipCount={potChipCount}
+              showBbStacks={showBbStacks}
+              blindUnitValue={blindUnitValue}
+              smallBlindValue={smallBlindValue}
+              bigBlindValue={blindUnitValue}
               boardSlots={boardSlots}
               cardLabel={cardLabel}
               cardSuitClass={cardSuitClass}
@@ -1028,6 +1232,11 @@ function App() {
               cardLabel={cardLabel}
               formatChipCount={formatChipCount}
               getBetMarkerPosition={getBetMarkerPosition}
+              isHost={isHost}
+              hostAdminEnabled={isHost && !hasRound}
+              onHostAdjustStack={handleHostAdjustStack}
+              onHostMovePlayer={handleHostMovePlayer}
+              onHostKickPlayer={handleHostKickPlayer}
             />
             </div>
           </div>
@@ -1036,6 +1245,87 @@ function App() {
         <div className={`table-hud-row ${shouldShowActionDock ? "" : "table-hud-row-dev-only"}`}>
           {shouldShowActionDock ? (
           <aside className="table-action-corner">
+            <div
+              className={`table-action-edit-lane ${
+                canRaiseAction && actionDrawerMode === "slider"
+                  ? "table-action-edit-lane-open"
+                  : "table-action-edit-lane-closed"
+              }`}
+              aria-hidden={!(canRaiseAction && actionDrawerMode === "slider")}
+            >
+              <div className="table-action-edit-lane-inner">
+                <div className="inline-raise-slider" aria-label="Raise slider">
+                  <div className="inline-raise-slider-header">
+                    <span className="inline-raise-slider-label">
+                      {raiseSliderIntent === "editDefault" ? "Default raise" : "Raise size"}
+                    </span>
+                    <span className="inline-raise-slider-value">
+                      {formatAmountForWidget(amount)}
+                    </span>
+                  </div>
+                  <div className="inline-raise-slider-controls">
+                    <input
+                      className="raise-slider raise-slider-inline"
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Math.max(0, Math.min(100, Math.round(raiseSliderPosition ?? 0)))}
+                      onChange={(event) => handleRaiseSliderChange(event.target.value)}
+                    />
+                    <div className="inline-raise-slider-nudges">
+                      <button
+                        type="button"
+                        onClick={() => handleRaiseNudge(-1)}
+                        aria-label={`Decrease raise by ${raiseNudgeBbLabel} BB`}
+                      >
+                        -{raiseNudgeBbLabel} BB
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRaiseNudge(1)}
+                        aria-label={`Increase raise by ${raiseNudgeBbLabel} BB`}
+                      >
+                        +{raiseNudgeBbLabel} BB
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="raise-slider-presets-row">
+                  <button type="button" onClick={handleHalfPotRaise}>
+                    1/2 pot
+                  </button>
+                  <button type="button" onClick={handleThreeQuarterPotRaise}>
+                    3/4 pot
+                  </button>
+                  <button type="button" onClick={handlePotRaise}>
+                    Pot
+                  </button>
+                  <button type="button" onClick={handleSetMinRaise}>
+                    Min
+                  </button>
+                  <button type="button" onClick={handleSetAllInRaise}>
+                    All-in
+                  </button>
+                </div>
+                <div className="raise-slider-edit-actions">
+                  <button
+                    type="button"
+                    className="raise-slider-edit-back"
+                    onClick={cancelRaiseSizeEdit}
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    className="raise-slider-edit-confirm"
+                    onClick={confirmRaiseSizeEdit}
+                  >
+                    {raiseSliderIntent === "editDefault" ? "Save default" : "Raise"}
+                  </button>
+                </div>
+              </div>
+            </div>
             <div className="table-action-dock" role="region" aria-label="Table actions">
             <HandStatusPanel
               statusLabel={actionStatusLabel}
@@ -1060,44 +1350,29 @@ function App() {
             />
             <ActionControlsPanel
               canActNow={canActNow}
-              hasRound={hasRound}
               canCheckAction={canCheckAction}
               canCallAction={canCallAction}
               canFoldAction={canFoldAction}
               canBetAction={canBetAction}
               canRaiseAction={canRaiseAction}
               showAmountControls={showAmountControls}
-              amount={amount}
               localToCall={localToCall}
-              raiseMinTarget={raiseMinTarget}
-              raiseMaxTarget={raiseMaxTarget}
-              localCommittedThisStreet={localCommittedThisStreet}
-              showPresetButtons={showPresetButtons}
               betPresetPercentages={betPresetPercentages}
-              showRaiseSlider={showRaiseSlider && canRaiseAction}
+              actionDrawerMode={actionDrawerMode}
               preflopRaiseUi={preflopRaiseUi}
               preflopRaiseTarget={preflopRaiseTarget ?? raiseMinTarget}
-              preflopSizingHint={preflopSizingHint}
-              onAmountChange={setAmount}
-              onAmountInputKeyDown={handleAmountInputKeyDown}
+              blindUnitValue={blindUnitValue}
+              showBbStacks={showBbStacks}
               onCheck={submitCheck}
               onCall={submitCall}
               onFold={submitFold}
-              onRaiseClick={handleRaiseClick}
-              onTogglePresets={() => setShowPresetButtons((previous) => !previous)}
+              onPreflopRaiseDefault={handlePreflopRaiseDefault}
+              onPreflopEditDefault={handlePreflopEditDefaultSizing}
+              onRaiseOpenSizing={handleRaiseOpenSizing}
+              onSetDrawerMode={setActionDrawerMode}
               onApplyPreset={applyBetPreset}
               onEditPreset={editBetPresetAtIndex}
-              onRaiseNudge={handleRaiseNudge}
-              onSetHalfPotRaise={handleHalfPotRaise}
-              onSetPotRaise={handlePotRaise}
-              onSetMinRaise={handleSetMinRaise}
-              onSetAllIn={handleSetAllInRaise}
-              raiseSliderPosition={raiseSliderPosition}
-              raiseQuarterAmount={raiseQuarterAmount}
-              raiseMiddleAmount={raiseMiddleAmount}
-              raiseThreeQuarterAmount={raiseThreeQuarterAmount}
-              onRaiseSliderChange={handleRaiseSliderChange}
-              onCloseRaiseSlider={() => setShowRaiseSlider(false)}
+              onCloseDrawer={() => setActionDrawerMode("closed")}
             />
             </div>
           </aside>

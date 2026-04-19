@@ -7,7 +7,9 @@
         "dev": "node --watch src/index.js",
         "simulate:round": "node scripts/simulate-round.mjs",
         "smoke:two-player": "node scripts/smoke-two-player.mjs",
-        "test:rules": "npm run simulate:round && npm run smoke:two-player"
+        "verify:lifecycle-guards": "node scripts/verify-lifecycle-guards.mjs",
+        "verify:host-admin": "node scripts/verify-host-admin.mjs",
+        "test:rules": "npm run verify:lifecycle-guards && npm run verify:host-admin && npm run simulate:round && npm run smoke:two-player"
     },
     "dependencies": {
         "@fastify/websocket": "^11.2.0",

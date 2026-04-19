@@ -1,185 +1,171 @@
 export default function ActionControlsPanel({
+  canActNow,
   canCheckAction,
   canCallAction,
   canFoldAction,
   canBetAction,
   canRaiseAction,
   showAmountControls,
-  amount,
   localToCall,
-  raiseMinTarget,
-  raiseMaxTarget,
-  localCommittedThisStreet,
-  showPresetButtons,
   betPresetPercentages,
-  showRaiseSlider,
+  actionDrawerMode,
   preflopRaiseUi,
   preflopRaiseTarget,
-  preflopSizingHint,
-  onAmountChange,
-  onAmountInputKeyDown,
+  blindUnitValue,
+  showBbStacks,
   onCheck,
   onCall,
   onFold,
-  onRaiseClick,
-  onTogglePresets,
+  onPreflopRaiseDefault,
+  onPreflopEditDefault,
+  onRaiseOpenSizing,
+  onSetDrawerMode,
   onApplyPreset,
   onEditPreset,
-  onRaiseNudge,
-  onSetHalfPotRaise,
-  onSetPotRaise,
-  onSetMinRaise,
-  onSetAllIn,
-  raiseSliderPosition,
-  raiseQuarterAmount,
-  raiseMiddleAmount,
-  raiseThreeQuarterAmount,
-  onRaiseSliderChange,
-  onCloseRaiseSlider,
+  onCloseDrawer,
 }) {
+  const safeBigBlind = Math.max(1, Number(blindUnitValue) || 1);
+  const formatBbValue = (chipAmount) => {
+    const bb = Math.max(0, Number(chipAmount) || 0) / safeBigBlind;
+    return new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: bb % 1 === 0 ? 0 : 1,
+      maximumFractionDigits: 2,
+    }).format(bb);
+  };
+  const formatAmountDisplay = (chipAmount) =>
+    showBbStacks ? `${formatBbValue(chipAmount)} BB` : chipAmount;
+  const drawerHasSlider = actionDrawerMode === "slider" || actionDrawerMode === "quick";
+  const drawerHasPresets = actionDrawerMode === "presets";
+  const canUseDrawerModes = showAmountControls;
+  const showCheckOrCall = canCheckAction || canCallAction || canActNow;
+  const showRaiseOrBet = canRaiseAction || canBetAction || canActNow;
+  const showFold = canFoldAction || canActNow;
+  const showPrimaryRow = showCheckOrCall || showRaiseOrBet || showFold;
+
+  const toggleDrawerMode = (nextMode) => {
+    if (!canUseDrawerModes) return;
+    if (typeof onSetDrawerMode !== "function") return;
+    onSetDrawerMode((previousMode) => (previousMode === nextMode ? "closed" : nextMode));
+  };
+
   return (
     <>
-      {canCheckAction || canCallAction || canFoldAction || showAmountControls ? (
-        <div className="table-action-row table-action-primary-row">
-          {canCheckAction ? (
-            <button className="action-primary-button" onClick={onCheck}>
-              Check
+      {showPrimaryRow && !drawerHasSlider ? (
+        <div
+          className={`table-action-row table-action-primary-row${
+            preflopRaiseUi && canRaiseAction ? " table-action-primary-row--preflop" : ""
+          }`}
+        >
+          {showCheckOrCall ? (
+            <button
+              className="action-primary-button action-primary-button-neutral"
+              onClick={canCallAction ? onCall : onCheck}
+              disabled={!canCheckAction && !canCallAction}
+            >
+              {canCallAction ? `Call ${formatAmountDisplay(localToCall)}` : "Check"}
             </button>
           ) : null}
-          {canCallAction ? (
-            <button className="action-primary-button" onClick={onCall}>
-              Call {localToCall}
-            </button>
+          {showRaiseOrBet ? (
+            preflopRaiseUi && canRaiseAction ? (
+              <>
+                <div className="preflop-default-row">
+                  <button
+                    type="button"
+                    className="action-primary-button action-primary-button-raise action-preflop-default"
+                    onClick={onPreflopRaiseDefault}
+                    aria-label={`Raise default to ${formatBbValue(preflopRaiseTarget)} big blinds`}
+                  >
+                    <span className="preflop-default-title">Raise default</span>
+                    <span className="preflop-default-size">{formatBbValue(preflopRaiseTarget)} BB</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="preflop-default-edit"
+                    onClick={onPreflopEditDefault}
+                    aria-label="Edit default raise size"
+                    title="Edit default raise size"
+                  >
+                    <span className="preflop-default-edit-glyph" aria-hidden="true">
+                      {"\u270E"}
+                    </span>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="action-primary-button action-preflop-custom"
+                  onClick={onRaiseOpenSizing}
+                  aria-label="Raise to a custom size"
+                >
+                  Raise to…
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className={`action-primary-button action-primary-button-raise ${
+                  drawerHasPresets ? "action-mode-active" : ""
+                }`}
+                onClick={canRaiseAction ? onRaiseOpenSizing : () => toggleDrawerMode("presets")}
+                disabled={!canRaiseAction && !canBetAction}
+              >
+                {canBetAction ? "Bet" : "Raise"}
+              </button>
+            )
           ) : null}
-          {canFoldAction ? <button onClick={onFold}>Fold</button> : null}
-          {canRaiseAction && !preflopRaiseUi ? (
-            <input
-              className="table-action-amount"
-              type="number"
-              min={1}
-              value={amount}
-              onChange={(event) => onAmountChange(Number(event.target.value || 1))}
-              onKeyDown={onAmountInputKeyDown}
-            />
-          ) : null}
-          {canBetAction ? (
-            <button className="action-primary-button" onClick={onTogglePresets}>
-              {showPresetButtons ? "Cancel bet" : "Bet"}
-            </button>
-          ) : null}
-          {canRaiseAction && preflopRaiseUi ? (
+          {showFold ? (
             <button
               type="button"
-              className={`action-raise-button action-primary-button ${showRaiseSlider ? "action-raise-confirm" : ""}`}
-              onClick={onRaiseClick}
-              aria-label={
-                showRaiseSlider
-                  ? `Confirm raise to ${Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}`
-                  : `Raise to ${preflopRaiseTarget} (${preflopSizingHint})`
-              }
+              className="action-primary-button action-primary-button-fold"
+              onClick={onFold}
+              disabled={!canFoldAction}
             >
-              {showRaiseSlider
-                ? `Raise to ${Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}`
-                : `Raise to ${preflopRaiseTarget}`}
-            </button>
-          ) : null}
-          {canRaiseAction && !preflopRaiseUi ? (
-            <button
-              className={`action-raise-button ${showRaiseSlider ? "action-primary-button action-raise-confirm" : ""}`}
-              onClick={onRaiseClick}
-              aria-label={showRaiseSlider ? `Confirm raise to ${amount}` : `Raise to ${amount}`}
-            >
-              Raise to {Math.max(raiseMinTarget, Math.min(raiseMaxTarget, amount))}
+              Fold
             </button>
           ) : null}
         </div>
       ) : null}
-      {(canBetAction || canRaiseAction) && showPresetButtons && !preflopRaiseUi ? (
-        <div className="table-action-presets">
-          {betPresetPercentages.length > 0 ? (
-            betPresetPercentages.map((percent, index) => (
-              <button
-                key={`preset-${percent}`}
-                className="preset-button"
-                onClick={() => onApplyPreset(percent)}
-              >
-                <span>{percent}% pot</span>
-                <span
-                  className="preset-edit"
-                  title="Edit preset"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    onEditPreset(index);
-                  }}
-                >
-                  ✎
-                </span>
-              </button>
-            ))
-          ) : (
-            <span className="table-dev-note">Set preset percentages below</span>
-          )}
+      <div className={`action-drawer-shell ${drawerHasPresets ? "action-drawer-shell-open" : ""}`}>
+        <div className="action-drawer-panel">
+          {drawerHasPresets ? (
+            <div className="raise-slider-panel">
+              {canBetAction ? (
+                <div className="table-action-presets">
+                  {betPresetPercentages.length > 0 ? (
+                    betPresetPercentages.map((percent, index) => (
+                      <button
+                        key={`preset-${percent}`}
+                        type="button"
+                        className="preset-button"
+                        onClick={() => onApplyPreset(percent)}
+                      >
+                        <span>{percent}% pot</span>
+                        <span
+                          className="preset-edit"
+                          title="Edit preset"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onEditPreset(index);
+                          }}
+                        >
+                          {"\u270E"}
+                        </span>
+                      </button>
+                    ))
+                  ) : (
+                    <span className="table-dev-note">Set preset percentages below</span>
+                  )}
+                </div>
+              ) : null}
+              <div className="raise-slider-actions">
+                <button type="button" onClick={onCloseDrawer}>
+                  Back
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
-      ) : null}
-      {showRaiseSlider ? (
-        <div className="raise-slider-panel">
-          <div className="raise-slider-header">
-            <span>Raise {amount}</span>
-            <span>+{Math.max(0, amount - localCommittedThisStreet)}</span>
-          </div>
-          <div className="raise-slider-stepper">
-            <button disabled={!canRaiseAction} onClick={() => onRaiseNudge(-1)}>
-              -1bb
-            </button>
-            <button disabled={!canRaiseAction} onClick={() => onRaiseNudge(1)}>
-              +1bb
-            </button>
-            <button disabled={!canRaiseAction} onClick={onSetHalfPotRaise}>
-              1/2 pot
-            </button>
-            <button disabled={!canRaiseAction} onClick={onSetPotRaise}>
-              Pot
-            </button>
-            <button disabled={!canRaiseAction} onClick={() => onRaiseNudge(5)}>
-              +5bb
-            </button>
-            <button disabled={!canRaiseAction} onClick={onSetMinRaise}>
-              Min
-            </button>
-            <button disabled={!canRaiseAction} onClick={onSetAllIn}>
-              All-in
-            </button>
-          </div>
-          <input
-            className="raise-slider"
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={Math.max(0, Math.min(100, Math.round(raiseSliderPosition ?? 0)))}
-            list="raise-target-marks"
-            onChange={(event) => onRaiseSliderChange(event.target.value)}
-          />
-          <datalist id="raise-target-marks">
-            <option value={0} />
-            <option value={25} />
-            <option value={50} />
-            <option value={75} />
-            <option value={100} />
-          </datalist>
-          <div className="raise-slider-marks">
-            <span>{raiseMinTarget} min</span>
-            <span>{raiseQuarterAmount}</span>
-            <span>{raiseMiddleAmount}</span>
-            <span>{raiseThreeQuarterAmount}</span>
-            <span>{raiseMaxTarget} max</span>
-          </div>
-          <div className="raise-slider-actions">
-            <button onClick={onCloseRaiseSlider}>Close</button>
-          </div>
-        </div>
-      ) : null}
+      </div>
     </>
   );
 }

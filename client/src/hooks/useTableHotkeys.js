@@ -52,7 +52,7 @@ export function useTableHotkeys(hotkeysPayload) {
       }
       if (event.code === "KeyR" && h.canRaiseAction) {
         event.preventDefault();
-        h.handleRaiseClick();
+        h.handleRaiseHotkey();
         return;
       }
       if (event.code === "KeyB" && h.canBetAction) {

@@ -40,6 +40,30 @@ function isBotTurn(room) {
   return room.hand.pendingSeatNumbers.has(bot.seatNumber);
 }
 
+function deriveActiveSeatNumbers(room) {
+  const activeSeats = [];
+  for (const player of room.playersBySocket.values()) {
+    if (!Number.isInteger(player?.seatNumber)) continue;
+    if (Array.isArray(player.holeCards) && player.holeCards.length > 0) {
+      activeSeats.push(player.seatNumber);
+    }
+  }
+  return activeSeats.sort((left, right) => left - right);
+}
+
+function deriveLastAggressorSeatNumber(room) {
+  const actionLog = Array.isArray(room.hand.actionLog) ? room.hand.actionLog : [];
+  for (let index = actionLog.length - 1; index >= 0; index -= 1) {
+    const action = actionLog[index];
+    if (action?.street !== room.hand.street) continue;
+    if (action?.actionType !== "raise_to" && action?.actionType !== "bet") continue;
+    if (Number.isInteger(action?.seatNumber)) {
+      return action.seatNumber;
+    }
+  }
+  return null;
+}
+
 function deriveBotState(room, helpers) {
   const bot = ensureBotState(room);
   if (!isBotTurn(room)) return null;
@@ -63,6 +87,10 @@ function deriveBotState(room, helpers) {
     committedThisStreet,
     stack,
     minRaiseTo: room.hand.minRaiseTo,
+    bigBlind: Number(room.table?.bigBlind ?? room.hand?.bigBlind ?? 20),
+    dealerSeatNumber: Number.isInteger(room.hand.dealerSeatNumber) ? room.hand.dealerSeatNumber : null,
+    activeSeatNumbers: deriveActiveSeatNumbers(room),
+    lastAggressorSeatNumber: deriveLastAggressorSeatNumber(room),
     raiseClosedSeatNumbers: room.hand.raiseClosedSeatNumbers,
     holeCards: player.holeCards ?? [],
     boardCards: room.hand.board ?? [],
